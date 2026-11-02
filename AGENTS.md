@@ -47,6 +47,10 @@ local build pass.
 
 ## Build and test
 
+The repository's `*.jar` ignore rule also ignores `gradle/wrapper/gradle-wrapper.jar`, so a fresh
+clone may not have a working `./gradlew`. Use a local Gradle 9.8+ installation (the commands below
+assume `gradle` is on `PATH`) or restore the wrapper JAR before using `./gradlew`.
+
 Run from `java/`:
 
 ```bash
