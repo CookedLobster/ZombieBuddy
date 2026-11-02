@@ -3,6 +3,7 @@ package me.zed_0xff.zombie_buddy.patches;
 import java.util.List;
 
 import me.zed_0xff.zombie_buddy.Loader;
+import me.zed_0xff.zombie_buddy.Logger;
 import me.zed_0xff.zombie_buddy.Reflect;
 import me.zed_0xff.zombie_buddy.annotations.Patch;
 import zombie.network.GameClient;
@@ -13,6 +14,8 @@ import zombie.network.GameClient;
  * Only applies when ZombieBuddy is not in the server's mod list.
  */
 public class Patch_NetChecksum {
+    private static volatile boolean warnedChecksumBypass = false;
+
     public static boolean isOwnFile(String relPath) {
         if (relPath == null) {
             return false;
@@ -34,7 +37,14 @@ public class Patch_NetChecksum {
     public static class Patch_addFile {
         @Patch.OnEnter(skipOn = true)
         public static boolean enter(String relPath, String absPath) {
-            return Loader.stealthMode() && Patch_NetChecksum.isOwnFile(relPath) && Patch_NetChecksum.serverLacksZB();
+            boolean hide = Loader.stealthMode() && Patch_NetChecksum.isOwnFile(relPath) && Patch_NetChecksum.serverLacksZB();
+            if (hide && !warnedChecksumBypass) {
+                warnedChecksumBypass = true;
+                Logger.warn("Stealth mode: hiding ZombieBuddy's own Lua files from the multiplayer "
+                    + "NetChecksum. This bypasses the server's mod checksum for those files; ensure "
+                    + "the server permits it.");
+            }
+            return hide;
         }
     }
 }

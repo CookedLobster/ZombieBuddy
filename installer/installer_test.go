@@ -1,12 +1,22 @@
 package main
 
 import (
+	"archive/zip"
 	"bufio"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/asn1"
+	"encoding/hex"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFindAppInLibraries(t *testing.T) {
@@ -552,5 +562,148 @@ func TestDetectZBCopiesAndPrompt(t *testing.T) {
 	}
 	if _, err := promptZBCopy(bufio.NewReader(strings.NewReader("")), copies); err == nil {
 		t.Fatal("expected an error on EOF")
+	}
+}
+
+func derWrap(tag byte, content []byte) []byte {
+	length := len(content)
+	switch {
+	case length < 128:
+		return append([]byte{tag, byte(length)}, content...)
+	case length < 256:
+		return append([]byte{tag, 0x81, byte(length)}, content...)
+	default:
+		return append([]byte{tag, 0x82, byte(length >> 8), byte(length)}, content...)
+	}
+}
+
+func makePKCS7WithCert(t *testing.T, cert *x509.Certificate) []byte {
+	t.Helper()
+	signedData := struct {
+		Version          int
+		DigestAlgorithms asn1.RawValue
+		ContentInfo      asn1.RawValue
+		Certificates     asn1.RawValue `asn1:"optional,tag:0"`
+		CRLs             asn1.RawValue `asn1:"optional,tag:1"`
+		SignerInfos      asn1.RawValue
+	}{
+		Version:          1,
+		DigestAlgorithms: asn1.RawValue{FullBytes: []byte{0x31, 0x00}},
+		ContentInfo:      asn1.RawValue{FullBytes: []byte{0x30, 0x00}},
+		Certificates:     asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: cert.Raw},
+		SignerInfos:      asn1.RawValue{FullBytes: []byte{0x31, 0x00}},
+	}
+	signedBytes, err := asn1.Marshal(signedData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oid, err := asn1.Marshal(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 7, 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return derWrap(0x30, append(oid, derWrap(0xa0, signedBytes)...))
+}
+
+func makeTestCert(t *testing.T) *x509.Certificate {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "ZombieBuddy test signer"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cert
+}
+
+func makeJar(t *testing.T, signatureBlock []byte) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "test.jar")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	if signatureBlock != nil {
+		w, err := zw.Create("META-INF/TEST.RSA")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(signatureBlock); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w, err := zw.Create("Test.class")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte{0xca, 0xfe, 0xba, 0xbe}); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestVerifyJarSignatureRejectsUnsigned(t *testing.T) {
+	jar := makeJar(t, nil)
+	if err := verifyJarSignature(jar); err == nil {
+		t.Fatal("expected unsigned JAR to be rejected")
+	}
+}
+
+func TestVerifyJarSignatureAcceptsPinnedCertificate(t *testing.T) {
+	cert := makeTestCert(t)
+	jar := makeJar(t, makePKCS7WithCert(t, cert))
+	sum := sha256.Sum256(cert.Raw)
+	if err := verifyJarSignatureWithFingerprint(jar, hex.EncodeToString(sum[:])); err != nil {
+		t.Fatalf("expected signed JAR to be accepted: %v", err)
+	}
+	if err := verifyJarSignatureWithFingerprint(jar, ZB_JAR_CERT_SHA256); err == nil {
+		t.Fatal("expected a non-matching fingerprint to be rejected")
+	}
+}
+
+func TestManualPatchVDFCreatesBackup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "localconfig.vdf")
+	vdfText := "\"UserLocalConfigStore\"\n{\n\t\"Software\"\n\t{\n\t\t\"Valve\"\n\t\t{\n\t\t\t\"Steam\"\n\t\t\t{\n\t\t\t\t\"Apps\"\n\t\t\t\t{\n" +
+		"\t\t\t\t\t\"" + PZ_APP_ID + "\"\n\t\t\t\t\t{\n" +
+		"\t\t\t\t\t\t\"LaunchOptions\"\t\t\"-debug\"\n" +
+		"\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n"
+	if err := os.WriteFile(path, []byte(vdfText), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := manualPatchVDF(path, "-debug", addZombieBuddyLaunchOptions("-debug")); err != nil {
+		t.Fatal(err)
+	}
+	backups, err := filepath.Glob(path + ".zb-backup-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 1 {
+		t.Fatalf("got %d backups, want 1", len(backups))
+	}
+	backup, err := os.ReadFile(backups[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(backup) != vdfText {
+		t.Fatal("backup does not contain the original VDF")
 	}
 }

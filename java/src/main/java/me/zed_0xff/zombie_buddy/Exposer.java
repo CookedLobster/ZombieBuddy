@@ -43,6 +43,15 @@ public class Exposer {
         String name() default "";
     }
 
+    /**
+     * Marks a class whose Lua API is a development-only escape hatch (reflection, arbitrary
+     * method invocation, etc.). It is only exposed when both {@code experimental} and
+     * {@code devtools=true} are set.
+     */
+    @Retention(RetentionPolicy.RUNTIME)
+    @Target(ElementType.TYPE)
+    public @interface RequiresDevTools {}
+
     // Class -> Lua name (may contain dots for nesting, empty = use simple name)
     private static final HashMap<Class<?>, String> g_exposed_classes = new HashMap<>();
     private static final HashMap<Class<?>, HashSet<String>> g_exposed_methods = new HashMap<>();
@@ -90,6 +99,14 @@ public class Exposer {
     }
 
     public static void exposeClass(Class<?> cls, String name) {
+        if (cls == null) {
+            return;
+        }
+        if (cls.isAnnotationPresent(RequiresDevTools.class) && !Agent.isDevToolsEnabled()) {
+            Logger.warn("Not exposing development-only Lua API " + cls.getName()
+                + ": requires experimental=true and devtools=true");
+            return;
+        }
         if (g_exposed_classes.containsKey(cls)) {
             return;
         }
@@ -352,6 +369,12 @@ public class Exposer {
             Class<?> cls = loader.loadClass(className);
             String clsPackage = cls.getPackage() != null ? cls.getPackage().getName() : "";
             if (!clsPackage.equals(packageName)) {
+                return;
+            }
+
+            if (cls.isAnnotationPresent(RequiresDevTools.class) && !Agent.isDevToolsEnabled()) {
+                Logger.warn("Not exposing development-only Lua API " + cls.getName()
+                    + ": requires experimental=true and devtools=true");
                 return;
             }
 

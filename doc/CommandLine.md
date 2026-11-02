@@ -184,6 +184,36 @@ Enables experimental patches, including the HTTP Lua API. This is a flag paramet
 
 > **Warning:** Experimental features can expose game state and arbitrary Java/Lua capabilities. Keep them disabled outside development.
 
+### dev
+
+Enables development-only launch arguments: `patches_jar`, `expose_classes`, and
+`lua_init_script`. Default: `false`. These arguments are ignored with a warning unless
+`dev=true` is set.
+
+**Example:**
+
+```
+-javaagent:ZombieBuddy.jar=dev=true,patches_jar=/path/to/MyPatches.jar:com.example.patches --
+```
+
+> **Warning:** `dev=true` allows arbitrary Java code and arbitrary Lua files to run outside the
+> normal Java-mod approval flow. Use it only on a development machine.
+
+### devtools
+
+Enables the experimental reflection/debug Lua helpers (`zbinspect`, `zbmethods`, `zbfields`,
+`zbget`, `zbset`, `zbcall`, `zbmap`, `zbgrep`, `zbgreplog`) and the `ZombieBuddy.Watches` API.
+Requires `experimental=true` in addition to `devtools=true`. Default: `false`.
+
+**Example:**
+
+```
+-javaagent:ZombieBuddy.jar=experimental=true,devtools=true --
+```
+
+> **Warning:** `devtools=true` gives Lua code broad reflective access to Java objects, including
+> field writes and method invocation. Keep it disabled outside development.
+
 ---
 
 ## Experimental HTTP Lua API
@@ -263,19 +293,20 @@ Timeout in milliseconds for queued Lua tasks. Default: `5000`.
 ### patches_jar
 
 Load additional patch JARs at startup. Useful for development or testing patches without packaging them as a mod.
+Requires `dev=true`; the argument is ignored otherwise.
 
 **Format:** `path:package_name` - multiple entries separated by semicolons.
 
 **Example:**
 
 ```
--javaagent:ZombieBuddy.jar=patches_jar=/path/to/MyPatches.jar:com.example.patches --
+-javaagent:ZombieBuddy.jar=dev=true,patches_jar=/path/to/MyPatches.jar:com.example.patches --
 ```
 
 Multiple JARs:
 
 ```
--javaagent:ZombieBuddy.jar=patches_jar=/path/to/First.jar:com.first;/path/to/Second.jar:com.second --
+-javaagent:ZombieBuddy.jar=dev=true,patches_jar=/path/to/First.jar:com.first;/path/to/Second.jar:com.second --
 ```
 
 ---
@@ -283,11 +314,26 @@ Multiple JARs:
 ### expose_classes
 
 Expose Java classes to Lua at startup. Comma-separated list of fully-qualified class names.
+Requires `dev=true`; the argument is ignored otherwise.
 
 **Example:**
 
 ```
--javaagent:ZombieBuddy.jar=expose_classes=com.example.MyClass,com.example.OtherClass --
+-javaagent:ZombieBuddy.jar=dev=true,expose_classes=com.example.MyClass,com.example.OtherClass --
+```
+
+---
+
+### lua_init_script
+
+Run a Lua file once after Lua initialization. Requires `dev=true`, and the script path must
+resolve to an existing file inside the game working directory or the Project Zomboid cache
+directory. The argument is ignored otherwise.
+
+**Example:**
+
+```
+-javaagent:ZombieBuddy.jar=dev=true,experimental,lua_init_script=media/lua/client/dev_bootstrap.lua --
 ```
 
 ---

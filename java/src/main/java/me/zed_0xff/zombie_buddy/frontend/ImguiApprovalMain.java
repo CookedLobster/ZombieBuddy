@@ -47,9 +47,10 @@ public final class ImguiApprovalMain {
         Path resp = Paths.get(args[1]);
 
         try {
-            List<JarBatchApprovalProtocol.Entry> entries = JarBatchApprovalProtocol.readRequest(req);
+            JarBatchApprovalProtocol.RequestEnvelope request = JarBatchApprovalProtocol.readRequestWithNonce(req);
+            List<JarBatchApprovalProtocol.Entry> entries = request.entries();
             if (entries.isEmpty()) {
-                JarBatchApprovalProtocol.writeResponse(resp, new ArrayList<>());
+                JarBatchApprovalProtocol.writeResponse(resp, new ArrayList<>(), request.nonce());
                 System.exit(0);
                 return;
             }
@@ -59,7 +60,7 @@ public final class ImguiApprovalMain {
                 System.exit(2);
                 return;
             }
-            JarBatchApprovalProtocol.writeResponse(resp, out);
+            JarBatchApprovalProtocol.writeResponse(resp, out, request.nonce());
             System.exit(0);
         } catch (Exception e) {
             e.printStackTrace(System.err);

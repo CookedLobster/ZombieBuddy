@@ -163,8 +163,13 @@ record JavaModInfo(
 
     /**
      * Validates parsed values and creates JavaModInfo, or null if invalid.
+     *
+     * <p>{@code modRoot} is the outermost directory a {@code javaJarFile} may resolve into.
+     * For B42 layouts the version directory may legitimately point at {@code ../libs}, so
+     * containment is checked against the mod root rather than the version directory.
      */
-    private static JavaModInfo validateAndCreate(ParsedValues parsed, Path infPath, Path infDir, Path jarDir, boolean bLogMissingJar) {
+    private static JavaModInfo validateAndCreate(ParsedValues parsed, Path infPath, Path infDir, Path jarDir,
+                                                 Path modRoot, boolean bLogMissingJar) {
         List<JarCandidate> candidates = parsed.jarCandidates();
         String javaPkgName = parsed.javaPkgName();
 
@@ -202,7 +207,10 @@ record JavaModInfo(
             return null;
         }
 
-        Path jarPath = jarDir.resolve(versionMatch.jarFilePath());
+        Path jarPath = resolveJarPath(jarDir, versionMatch.jarFilePath(), modRoot, infPath);
+        if (jarPath == null) {
+            return null;
+        }
         if (!Files.isRegularFile(jarPath)) {
             Logger.log(bLogMissingJar ? Logger.ERROR : Logger.TRACE, "JAR not found", jarPath);
             return null;
@@ -217,6 +225,48 @@ record JavaModInfo(
             parsed.displayName(),
             parsed.javaPreload()
         );
+    }
+
+    /**
+     * Resolves {@code javaJarFile} and enforces that it stays inside the mod root. Rejects
+     * absolute paths and lexical {@code ..} escapes, and also rejects symlinks whose real
+     * target leaves the mod root.
+     */
+    static Path resolveJarPath(Path jarDir, String jarFilePath, Path modRoot, Path infPath) {
+        if (jarDir == null || Utils.isBlank(jarFilePath) || modRoot == null) {
+            return null;
+        }
+        try {
+            if (Path.of(jarFilePath).isAbsolute()
+                    || jarFilePath.startsWith("/")
+                    || jarFilePath.startsWith("\\")
+                    || jarFilePath.matches("^[A-Za-z]:[\\\\/].*")) {
+                Logger.error("Rejecting absolute javaJarFile path '" + jarFilePath + "' in " + infPath);
+                return null;
+            }
+
+            Path root = modRoot.toAbsolutePath().normalize();
+            Path resolved = jarDir.toAbsolutePath().resolve(jarFilePath).normalize();
+            if (!resolved.startsWith(root)) {
+                Logger.error("Rejecting javaJarFile path outside the mod directory: '" + jarFilePath
+                    + "' resolves to " + resolved + " (mod root " + root + ") in " + infPath);
+                return null;
+            }
+
+            if (Files.isRegularFile(resolved)) {
+                Path realResolved = resolved.toRealPath();
+                Path realRoot = root.toRealPath();
+                if (!realResolved.startsWith(realRoot)) {
+                    Logger.error("Rejecting javaJarFile symlink escape: '" + jarFilePath
+                        + "' resolves to " + realResolved + " outside mod root " + realRoot + " in " + infPath);
+                    return null;
+                }
+            }
+            return resolved;
+        } catch (Exception e) {
+            Logger.error("Invalid javaJarFile path '" + jarFilePath + "' in " + infPath + ": " + e.getMessage());
+            return null;
+        }
     }
 
     /**
@@ -324,7 +374,39 @@ record JavaModInfo(
             Logger.trace("no/bad mod.info", infPath);
             return null;
         }
-        return validateAndCreate(parsed, infPath, modDir, modDir, false);
+        return validateAndCreate(parsed, infPath, modDir, modDir, modDir, false);
+    }
+
+    /**
+     * Parses a B42 version directory (for example {@code <mod root>/42}). Relative paths are
+     * resolved against the version directory, and containment is checked against its parent
+     * (the mod root), so a shared {@code ../libs} directory remains usable while paths that
+     * escape the mod root are rejected.
+     */
+    static JavaModInfo parseVersionDir(Path versionDir) {
+        if (versionDir == null || !Files.isDirectory(versionDir)) {
+            Logger.trace("not a dir      ", versionDir);
+            return null;
+        }
+
+        Path infPath = versionDir.resolve("mod.info");
+        ParsedValues parsed = parseModInfoFile(infPath);
+        if (parsed == null) {
+            Logger.trace("no/bad mod.info", infPath);
+            return null;
+        }
+        Path modRoot = versionDir.toAbsolutePath().normalize().getParent();
+        if (modRoot == null) {
+            modRoot = versionDir;
+        }
+        return validateAndCreate(parsed, infPath, versionDir, versionDir, modRoot, false);
+    }
+
+    static JavaModInfo parseVersionDir(String versionDirPath) {
+        if (Utils.isBlank(versionDirPath)) {
+            return null;
+        }
+        return parseVersionDir(Path.of(versionDirPath));
     }
 
     static String javaPkgNameFrom(Path infPath) {
@@ -360,6 +442,7 @@ record JavaModInfo(
         // 42.13/media/java/ZBBetterFPS.jar
         Path commonModInfoFile = commonDir.resolve("mod.info");
         ParsedValues commonParsed = parseModInfoFile(commonModInfoFile);
+        Path modRoot = mergedModRoot(commonDir, versionDir);
 
         if (commonParsed == null) {
             // 42/mod.info
@@ -369,9 +452,31 @@ record JavaModInfo(
             if (verParsed == null) {
                 return null;
             }
-            return validateAndCreate(verParsed, verModInfoFile, versionDir, commonDir, true);
+            return validateAndCreate(verParsed, verModInfoFile, versionDir, commonDir, modRoot, true);
         }
-        return validateAndCreate(commonParsed, commonModInfoFile, commonDir, versionDir, true);
+        return validateAndCreate(commonParsed, commonModInfoFile, commonDir, versionDir, modRoot, true);
+    }
+
+    /**
+     * Returns the outermost directory shared by a B42 {@code common} and version directory.
+     * {@code ../libs} is legitimate relative to a version directory, but it must still stay
+     * inside the mod's own root.
+     */
+    private static Path mergedModRoot(Path commonDir, Path versionDir) {
+        Path common = commonDir.toAbsolutePath().normalize();
+        Path version = versionDir.toAbsolutePath().normalize();
+        if (version.startsWith(common)) {
+            return common;
+        }
+        Path commonParent = common.getParent();
+        if (commonParent != null && version.getParent() != null && version.getParent().equals(commonParent)) {
+            return commonParent;
+        }
+        Path commonName = common.getFileName();
+        if (commonParent != null && commonName != null && commonName.toString().equalsIgnoreCase("common")) {
+            return commonParent;
+        }
+        return common;
     }
 
     static JavaModInfo parseMerged(String commonDirStr, String versionDirStr) {

@@ -102,16 +102,17 @@ public final class SwingApprovalMain {
         }
 
         try {
-            final List<JarBatchApprovalProtocol.Entry> entries = JarBatchApprovalProtocol.readRequest(req);
+            final JarBatchApprovalProtocol.RequestEnvelope request = JarBatchApprovalProtocol.readRequestWithNonce(req);
+            final List<JarBatchApprovalProtocol.Entry> entries = request.entries();
             if (entries.isEmpty()) {
-                JarBatchApprovalProtocol.writeResponse(resp, new ArrayList<>());
+                JarBatchApprovalProtocol.writeResponse(resp, new ArrayList<>(), request.nonce());
                 System.exit(0);
                 return;
             }
 
             // Author column: SteamID64 → label via KnownAuthors (GitHub + ~/.zombie_buddy cache).
             final Map<SteamID64, String> steamIdToDisplayName = KnownAuthors.loadSteamIdToDisplayName();
-            SwingUtilities.invokeLater(() -> showDialog(entries, resp, steamIdToDisplayName));
+            SwingUtilities.invokeLater(() -> showDialog(entries, request.nonce(), resp, steamIdToDisplayName));
         } catch (Exception e) {
             e.printStackTrace(System.err);
             System.exit(2);
@@ -128,6 +129,7 @@ public final class SwingApprovalMain {
 
     private static void showDialog(
         List<JarBatchApprovalProtocol.Entry> entries,
+        String nonce,
         Path resp,
         Map<SteamID64, String> steamIdToDisplayName
     ) {
@@ -520,7 +522,7 @@ public final class SwingApprovalMain {
                     }
                     out.add(e);
                 }
-                JarBatchApprovalProtocol.writeResponse(resp, out);
+                JarBatchApprovalProtocol.writeResponse(resp, out, nonce);
                 System.exit(0);
             } catch (Exception ex) {
                 ex.printStackTrace(System.err);

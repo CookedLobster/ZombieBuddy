@@ -1,8 +1,12 @@
 package me.zed_0xff.zombie_buddy.patches.experimental;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+
 import me.zed_0xff.zombie_buddy.Agent;
 import me.zed_0xff.zombie_buddy.Callbacks;
 import me.zed_0xff.zombie_buddy.Logger;
+import me.zed_0xff.zombie_buddy.Utils;
 import me.zed_0xff.zombie_buddy.annotations.Patch;
 import zombie.Lua.LuaManager;
 
@@ -22,11 +26,59 @@ public class Patch_LuaManager {
             if (!isInitialized) {
                 isInitialized = true;
                 if (Agent.arguments.containsKey("lua_init_script")) {
-                    String initScript = Agent.arguments.get("lua_init_script");
-                    Logger.info("Running init script: " + initScript);
-                    LuaManager.RunLua(initScript);
+                    runInitScript(Agent.arguments.get("lua_init_script"));
                 }
             }
+        }
+    }
+
+    private static void runInitScript(String initScript) {
+        if (!Agent.isDevMode()) {
+            Logger.warn("Ignoring lua_init_script: running an arbitrary Lua file at startup requires "
+                + "the development-only argument dev=true.");
+            return;
+        }
+        Path script = resolveAllowedScript(initScript);
+        if (script == null) {
+            Logger.error("Refusing lua_init_script outside the game/cache directory: " + initScript);
+            return;
+        }
+        Logger.warn("DEVELOPMENT MODE: running lua_init_script " + script);
+        LuaManager.RunLua(initScript.trim());
+    }
+
+    /**
+     * Restricts {@code lua_init_script} to an existing file inside the game working directory or
+     * the Project Zomboid cache directory. Prevents a launch option from pointing the agent at an
+     * arbitrary file elsewhere on the machine.
+     */
+    static Path resolveAllowedScript(String rawPath) {
+        if (Utils.isBlank(rawPath)) {
+            return null;
+        }
+        try {
+            Path script = Path.of(rawPath.trim()).toAbsolutePath().normalize();
+            if (!Files.isRegularFile(script)) {
+                return null;
+            }
+            Path realScript = script.toRealPath();
+            Path workDir = Path.of("").toAbsolutePath().normalize();
+            Path cachePath = Utils.getCachePath();
+            if (isInside(realScript, workDir) || (cachePath != null && isInside(realScript, cachePath))) {
+                return realScript;
+            }
+        } catch (Exception e) {
+            Logger.warn("Invalid lua_init_script path '" + rawPath + "': " + e.getMessage());
+        }
+        return null;
+    }
+
+    private static boolean isInside(Path file, Path root) {
+        try {
+            Path realRoot = root.toRealPath();
+            return file.startsWith(realRoot);
+        } catch (Exception e) {
+            return file.startsWith(root.toAbsolutePath().normalize());
         }
     }
 

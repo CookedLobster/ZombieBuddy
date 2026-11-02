@@ -1,5 +1,6 @@
 package me.zed_0xff.zombie_buddy.patches.experimental;
 
+import me.zed_0xff.zombie_buddy.Agent;
 import me.zed_0xff.zombie_buddy.annotations.Patch;
 import me.zed_0xff.zombie_buddy.Utils;
 
@@ -40,12 +41,12 @@ public class Patch_KahluaThread {
     public static class Patch_tableget {
         @Patch.OnEnter(skipOn = true)
         public static boolean enter(Object table, Object key) {
-            return METHODS.contains(key);
+            return Agent.isDevToolsEnabled() && METHODS.contains(key);
         }
 
         @Patch.OnExit
         public static void exit( Object table, Object key, @Patch.Return(readOnly = false) Object returnValue) {
-            if (key instanceof String keyStr) {
+            if (Agent.isDevToolsEnabled() && key instanceof String keyStr) {
                 if (METHODS.contains(keyStr)) {
                     returnValue = LuaManager.getFunctionObject(keyStr);
                 }

@@ -28,6 +28,7 @@ import se.krka.kahlua.vm.KahluaTable;
 import se.krka.kahlua.vm.LuaClosure;
 import zombie.Lua.LuaManager;
 
+@Exposer.RequiresDevTools
 public class zbUtils {
 
     @LuaMethod(name = "zbinspect", global = true)

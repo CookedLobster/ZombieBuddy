@@ -1,7 +1,13 @@
 package main
 
 import (
+	"archive/zip"
 	"bufio"
+	"bytes"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/asn1"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +19,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/andygrunwald/vdf"
 )
@@ -24,6 +31,10 @@ const (
 	INSTALLER_VERSION = "4.4"
 	ZB_LAUNCH_ARG     = "-agentlib:zbNative"
 	ZB_LAUNCH_OPTIONS = ZB_LAUNCH_ARG + " --"
+
+	// SHA-256 of the ZombieBuddy JAR signing certificate (DER), matching
+	// SelfUpdater.EXPECTED_FINGERPRINT in the Java agent.
+	ZB_JAR_CERT_SHA256 = "a775101bfb6c33a92cdf2520ac8d0295cebf890c840597377fd09b17d0eadd97"
 )
 
 var steamZombieBuddyLaunchOptionPattern = regexp.MustCompile(`(^|\s)-agentlib:zbNative(?:=\S*)?[ ]*[-]*`)
@@ -770,6 +781,11 @@ func copyCoreFiles(pzPath string, zbPath string) error {
 		}
 
 		dstPath := filepath.Join(pzPath, filename)
+		if filename == "ZombieBuddy.jar" {
+			if err := verifyJarSignature(srcPath); err != nil {
+				return fmt.Errorf("refusing to install %s: %w", filename, err)
+			}
+		}
 		fmt.Printf("[.] copying \"%s\" to \"%s\"\n", srcPath, dstPath)
 		err := copyFile(srcPath, dstPath)
 		if err != nil {
@@ -782,6 +798,9 @@ func copyCoreFiles(pzPath string, zbPath string) error {
 
 func removeCoreFiles(paths []string) error {
 	for _, path := range paths {
+		if _, err := backupFile(path); err != nil {
+			return err
+		}
 		err := os.Remove(path)
 		if err == nil {
 			fmt.Printf("[.] Removed %s\n", path)
@@ -843,7 +862,10 @@ func updateJSONLauncher(path string, mutate func(*launcherConfig) bool) (bool, e
 		return false, err
 	}
 	output = append(output, '\n')
-	return true, os.WriteFile(path, output, 0644)
+	if _, err := backupFile(path); err != nil {
+		return false, err
+	}
+	return true, writeFileAtomic(path, output, 0644)
 }
 
 func jsonLauncherHasZombieBuddy(path string) (bool, error) {
@@ -965,7 +987,10 @@ func updateBatchJavaOptionsValue(path string, mutate func(string) (string, bool)
 	if !updated {
 		return false, nil
 	}
-	return true, os.WriteFile(path, []byte(strings.Join(lines, newline)), 0644)
+	if _, err := backupFile(path); err != nil {
+		return false, err
+	}
+	return true, writeFileAtomic(path, []byte(strings.Join(lines, newline)), 0644)
 }
 
 func batchFileHasZombieBuddy(path string) (bool, error) {
@@ -1047,7 +1072,49 @@ func isZombieBuddyJavaOption(value string) bool {
 	return value == ZB_LAUNCH_ARG || strings.HasPrefix(value, ZB_LAUNCH_ARG+"=")
 }
 
-func copyFile(src, dst string) error {
+func backupFile(path string) (string, error) {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	suffix := time.Now().Format("20060102-150405.000000000")
+	backupPath := path + ".zb-backup-" + suffix
+	if err := copyFileRaw(path, backupPath); err != nil {
+		return "", fmt.Errorf("backing up %s: %w", path, err)
+	}
+	fmt.Printf("[.] backed up \"%s\" to \"%s\"\n", path, backupPath)
+	return backupPath, nil
+}
+
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpPath, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+func copyFileRaw(src, dst string) error {
 	sourceFile, err := os.Open(src)
 	if err != nil {
 		return err
@@ -1062,6 +1129,154 @@ func copyFile(src, dst string) error {
 
 	_, err = io.Copy(destFile, sourceFile)
 	return err
+}
+
+func copyFile(src, dst string) error {
+	if _, err := backupFile(dst); err != nil {
+		return err
+	}
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+
+	info, err := sourceFile.Stat()
+	if err != nil {
+		return err
+	}
+
+	destFile, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".tmp-")
+	if err != nil {
+		return err
+	}
+	tmpPath := destFile.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := io.Copy(destFile, sourceFile); err != nil {
+		destFile.Close()
+		return err
+	}
+	if err := destFile.Sync(); err != nil {
+		destFile.Close()
+		return err
+	}
+	if err := destFile.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpPath, info.Mode().Perm()); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, dst)
+}
+
+func verifyJarSignature(path string) error {
+	return verifyJarSignatureWithFingerprint(path, ZB_JAR_CERT_SHA256)
+}
+
+func verifyJarSignatureWithFingerprint(path string, fingerprintHex string) error {
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		return fmt.Errorf("opening JAR: %w", err)
+	}
+	defer zr.Close()
+
+	var signatureFiles []*zip.File
+	for _, f := range zr.File {
+		name := strings.ToUpper(f.Name)
+		if strings.HasPrefix(name, "META-INF/") &&
+			(strings.HasSuffix(name, ".RSA") || strings.HasSuffix(name, ".DSA") || strings.HasSuffix(name, ".EC")) {
+			signatureFiles = append(signatureFiles, f)
+		}
+	}
+	if len(signatureFiles) == 0 {
+		return fmt.Errorf("JAR is not signed (no META-INF signature block)")
+	}
+
+	expected, err := hex.DecodeString(fingerprintHex)
+	if err != nil {
+		return fmt.Errorf("invalid pinned certificate fingerprint: %w", err)
+	}
+
+	for _, sf := range signatureFiles {
+		rc, err := sf.Open()
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", sf.Name, err)
+		}
+		block, err := io.ReadAll(io.LimitReader(rc, 10<<20))
+		rc.Close()
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", sf.Name, err)
+		}
+		certs, err := pkcs7Certificates(block)
+		if err != nil {
+			return fmt.Errorf("parsing %s: %w", sf.Name, err)
+		}
+		blockPinned := false
+		for _, cert := range certs {
+			sum := sha256.Sum256(cert.Raw)
+			if bytes.Equal(sum[:], expected) {
+				blockPinned = true
+				break
+			}
+		}
+		if !blockPinned {
+			return fmt.Errorf("signature block %s is not signed by the pinned ZombieBuddy certificate", sf.Name)
+		}
+	}
+	return nil
+}
+
+func pkcs7Certificates(der []byte) ([]*x509.Certificate, error) {
+	var info struct {
+		ContentType asn1.ObjectIdentifier
+		Content     asn1.RawValue
+	}
+	if rest, err := asn1.Unmarshal(der, &info); err != nil {
+		return nil, err
+	} else if len(rest) != 0 {
+		return nil, fmt.Errorf("trailing data in PKCS#7 block")
+	}
+	if info.ContentType.String() != "1.2.840.113549.1.7.2" {
+		return nil, fmt.Errorf("not PKCS#7 signedData")
+	}
+
+	var signedData struct {
+		Version          int
+		DigestAlgorithms asn1.RawValue
+		ContentInfo      asn1.RawValue
+		Certificates     asn1.RawValue `asn1:"optional,tag:0"`
+		CRLs             asn1.RawValue `asn1:"optional,tag:1"`
+		SignerInfos      asn1.RawValue
+	}
+	if _, err := asn1.Unmarshal(info.Content.Bytes, &signedData); err != nil {
+		return nil, err
+	}
+	if len(signedData.Certificates.Bytes) == 0 {
+		return nil, fmt.Errorf("no certificates in PKCS#7 block")
+	}
+
+	var certs []*x509.Certificate
+	remaining := signedData.Certificates.Bytes
+	for len(remaining) > 0 {
+		var raw asn1.RawValue
+		rest, err := asn1.Unmarshal(remaining, &raw)
+		if err != nil {
+			return nil, err
+		}
+		if raw.Tag == asn1.TagSequence {
+			cert, err := x509.ParseCertificate(raw.FullBytes)
+			if err != nil {
+				return nil, err
+			}
+			certs = append(certs, cert)
+		}
+		remaining = rest
+	}
+	if len(certs) == 0 {
+		return nil, fmt.Errorf("no parsable certificates in PKCS#7 block")
+	}
+	return certs, nil
 }
 
 func updateLaunchOptions(steamPath string) error {
@@ -1157,6 +1372,7 @@ func patchVDF(path string) (bool, error) {
 		return false, nil
 	}
 
+	fmt.Printf("[.] launch options: %q -> %q\n", currentOptions, newOptions)
 	waitForSteamToClose("launch option update")
 	return true, manualPatchVDF(path, currentOptions, newOptions)
 }
@@ -1315,7 +1531,7 @@ func navigateMap(m map[string]interface{}, path ...string) (map[string]interface
 }
 
 func manualPatchVDF(path, oldOpts, newOpts string) error {
-	newOpts = escapeVDFString(newOpts)
+	escapedNewOpts := escapeVDFString(newOpts)
 	input, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -1344,7 +1560,7 @@ func manualPatchVDF(path, oldOpts, newOpts string) error {
 				if inApp == 0 {
 					if !launchOptionsFound {
 						// Add launch options before closing the app block
-						output = append(output, fmt.Sprintf("\t\t\t\t\t\"LaunchOptions\"\t\t\"%s\"", newOpts))
+						output = append(output, fmt.Sprintf("\t\t\t\t\t\"LaunchOptions\"\t\t\"%s\"", escapedNewOpts))
 					}
 					foundApp = false
 				}
@@ -1354,7 +1570,7 @@ func manualPatchVDF(path, oldOpts, newOpts string) error {
 				// Replace existing launch options
 				parts := strings.SplitN(line, "\"", 4)
 				if len(parts) >= 4 {
-					line = parts[0] + "\"" + parts[1] + "\"" + parts[2] + "\"" + newOpts + "\""
+					line = parts[0] + "\"" + parts[1] + "\"" + parts[2] + "\"" + escapedNewOpts + "\""
 					launchOptionsFound = true
 				}
 			}
@@ -1362,5 +1578,15 @@ func manualPatchVDF(path, oldOpts, newOpts string) error {
 		output = append(output, line)
 	}
 
-	return os.WriteFile(path, []byte(strings.Join(output, "\n")), 0644)
+	outputText := strings.Join(output, "\n")
+	if strings.Count(outputText, "{") != strings.Count(outputText, "}") {
+		return fmt.Errorf("refusing to write malformed VDF: unbalanced braces")
+	}
+	if escapedNewOpts != "" && !launchOptionsFound && !strings.Contains(outputText, escapedNewOpts) {
+		return fmt.Errorf("refusing to write VDF: launch options were not applied")
+	}
+	if _, err := backupFile(path); err != nil {
+		return err
+	}
+	return writeFileAtomic(path, []byte(outputText), 0644)
 }

@@ -170,6 +170,11 @@ public class Loader {
     static void initConfig() {
         g_config = Config.load();
         g_configDirty = false;
+        if (g_config.stealth_mode()) {
+            Logger.warn("Stealth mode is enabled: ZombieBuddy will hide its own Lua files from the "
+                + "multiplayer NetChecksum. This is a server-integrity exception and may violate "
+                + "server rules or anti-cheat expectations.");
+        }
     }
 
     /** Called from {@link Agent#premain} with {@code frontend=...} (default {@code auto}). */
@@ -327,9 +332,17 @@ public class Loader {
         return false;
     }
 
-    static void applyBatchApprovalLines(List<JarBatchApprovalProtocol.Entry> entries, JarDecisionTable disk) {
+    static void applyBatchApprovalLines(List<JarBatchApprovalProtocol.Entry> requestEntries,
+                                        List<JarBatchApprovalProtocol.Entry> entries,
+                                        JarDecisionTable disk) {
         if (entries == null) return;
-        for (JarBatchApprovalProtocol.Entry entry : entries) {
+        List<JarBatchApprovalProtocol.Entry> sanitized =
+            JarBatchApprovalProtocol.sanitizeResponse(requestEntries, entries);
+        if (sanitized == null) {
+            Logger.warn("Refusing Java mod approval response: rows do not match the request.");
+            return;
+        }
+        for (JarBatchApprovalProtocol.Entry entry : sanitized) {
             if (entry == null || entry.decision == null || Utils.isBlank(entry.sha256)) continue;
             boolean allow = entry.decision;
             disk.put(entry.sha256, allow);
@@ -795,7 +808,7 @@ public class Loader {
 
             JavaModInfo jModInfo = isB42
                 ? Utils.firstNonNull(
-                        () -> JavaModInfo.parse( mod.getVersionDir() ),
+                        () -> JavaModInfo.parseVersionDir( mod.getVersionDir() ),
                         () -> JavaModInfo.parse( mod.getCommonDir() ),
                         () -> JavaModInfo.parseMerged( mod.getCommonDir(), mod.getVersionDir() )
                         )
@@ -996,7 +1009,7 @@ public class Loader {
                         GameWindow.DoLoadingText("Loading Mods");
                     }
                 }
-                applyBatchApprovalLines(decided, approvals);
+                applyBatchApprovalLines(batchEntries, decided, approvals);
                 g_forceApprovalDialog = false; // reset after one batch, can be re-triggered by holding Shift on next load
             }
         }
@@ -1348,6 +1361,13 @@ public class Loader {
         Config newConfig = g_config.withStealthMode(value);
         if (newConfig.equals(g_config)) {
             return;
+        }
+        if (value) {
+            Logger.warn("Stealth mode enabled: ZombieBuddy will hide its own Lua files from the "
+                + "multiplayer NetChecksum. This is a server-integrity exception and may violate "
+                + "server rules or anti-cheat expectations. Use only where the server permits it.");
+        } else {
+            Logger.info("Stealth mode disabled: Lua checksum reporting restored.");
         }
         g_config = newConfig;
         Config.save(g_config);

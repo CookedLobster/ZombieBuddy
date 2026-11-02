@@ -94,31 +94,41 @@ public class Agent {
             Loader.loadResourceJar(Loader.BUNDLED_EXPERIMENTAL_JAR, basePkg + ".patches.experimental", Loader.Phase.PREMAIN);
         }
 
-        if( arguments.containsKey("patches_jar")) {
-            // Support multiple JARs separated by semicolon
-            // Each entry must be in format <path>:<package_name>
-            List<PatchesJarEntry> patchesJarEntries = new ArrayList<>();
-            String[] entries = arguments.get("patches_jar").split(";");
-            for (String entry : entries) {
-                entry = entry.trim();
-                if (!entry.isEmpty()) {
-                    int separator = entry.lastIndexOf(':');
-                    if (separator <= 0 || separator >= entry.length() - 1) {
-                        Logger.error("patches_jar entry must be in format <path>:<package_name>, got: " + entry);
-                        continue;
-                    }
-                    String jarPath = entry.substring(0, separator).trim();
-                    String packageName = entry.substring(separator + 1).trim();
-                    if (jarPath.isEmpty() || packageName.isEmpty()) {
-                        Logger.error("patches_jar entry must have non-empty path and package name, got: " + entry);
-                        continue;
-                    }
-                    patchesJarEntries.add(new PatchesJarEntry(jarPath, packageName));
-                }
-            }
+        if (isDevMode()) {
+            Logger.warn("DEVELOPMENT MODE: dev=true is set. Development-only launch arguments "
+                + "(patches_jar, expose_classes, lua_init_script) are enabled.");
+        }
 
-            for (PatchesJarEntry entry : patchesJarEntries) {
-                Loader.loadJar(entry.jarPath, entry.packageName, null, Loader.Phase.PREMAIN);
+        if( arguments.containsKey("patches_jar")) {
+            if (!isDevMode()) {
+                Logger.warn("Ignoring patches_jar: loading arbitrary patch JARs requires the "
+                    + "development-only argument dev=true.");
+            } else {
+                // Support multiple JARs separated by semicolon
+                // Each entry must be in format <path>:<package_name>
+                List<PatchesJarEntry> patchesJarEntries = new ArrayList<>();
+                String[] entries = arguments.get("patches_jar").split(";");
+                for (String entry : entries) {
+                    entry = entry.trim();
+                    if (!entry.isEmpty()) {
+                        int separator = entry.lastIndexOf(':');
+                        if (separator <= 0 || separator >= entry.length() - 1) {
+                            Logger.error("patches_jar entry must be in format <path>:<package_name>, got: " + entry);
+                            continue;
+                        }
+                        String jarPath = entry.substring(0, separator).trim();
+                        String packageName = entry.substring(separator + 1).trim();
+                        if (jarPath.isEmpty() || packageName.isEmpty()) {
+                            Logger.error("patches_jar entry must have non-empty path and package name, got: " + entry);
+                            continue;
+                        }
+                        patchesJarEntries.add(new PatchesJarEntry(jarPath, packageName));
+                    }
+                }
+
+                for (PatchesJarEntry entry : patchesJarEntries) {
+                    Loader.loadJar(entry.jarPath, entry.packageName, null, Loader.Phase.PREMAIN);
+                }
             }
         }
         
@@ -128,11 +138,16 @@ public class Agent {
         }
 
         if (arguments.containsKey("expose_classes")) {
-            String[] classes = arguments.get("expose_classes").split(",");
-            for (String className : classes) {
-                className = className.trim();
-                if (!className.isEmpty()) {
-                    Exposer.exposeClass(className);
+            if (!isDevMode()) {
+                Logger.warn("Ignoring expose_classes: exposing arbitrary Java classes to Lua requires "
+                    + "the development-only argument dev=true.");
+            } else {
+                String[] classes = arguments.get("expose_classes").split(",");
+                for (String className : classes) {
+                    className = className.trim();
+                    if (!className.isEmpty()) {
+                        Exposer.exposeClass(className);
+                    }
                 }
             }
         }
@@ -150,6 +165,19 @@ public class Agent {
 
     public static boolean isExperimental() {
         return arguments.containsKey("experimental");
+    }
+
+    /** Development-only launch arguments. Requires an explicit {@code dev=true}. */
+    public static boolean isDevMode() {
+        return Boolean.parseBoolean(arguments.getOrDefault("dev", "false").trim());
+    }
+
+    /**
+     * Reflective/debug Lua helpers ({@code zbget}, {@code zbset}, {@code zbcall}, ...).
+     * Requires both {@code experimental=true} and an explicit {@code devtools=true}.
+     */
+    public static boolean isDevToolsEnabled() {
+        return isExperimental() && Boolean.parseBoolean(arguments.getOrDefault("devtools", "false").trim());
     }
 
     public static int getArgInt(String key, int defaultVal) {

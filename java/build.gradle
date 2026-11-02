@@ -512,7 +512,7 @@ task test_patched(type: Test) {
         def bcJar = configurations.runtimeClasspath.find { it.name.contains("bcprov") }
         if (!bcJar) throw new GradleException("bouncycastle jar not found in runtimeClasspath")
         jvmArgs "-Xbootclasspath/a:${gsonJar}${File.pathSeparator}${bcJar}"
-        jvmArgs "-javaagent:${shadowJar.archiveFile.get().asFile.absolutePath}=patches_jar=${patchesJarPath}:${patchesPackageName},config_dir=.config,prop_prefix=zb"
+        jvmArgs "-javaagent:${shadowJar.archiveFile.get().asFile.absolutePath}=patches_jar=${patchesJarPath}:${patchesPackageName},config_dir=.config,prop_prefix=zb,dev=true"
     }
 }
 

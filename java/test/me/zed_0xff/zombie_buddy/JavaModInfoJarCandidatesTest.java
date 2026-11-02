@@ -131,4 +131,122 @@ class JavaModInfoJarCandidatesTest {
 
         assertNull(JavaModInfo.parse(tempDir));
     }
+
+    @Test
+    void rejectsParentTraversalOutsideModRoot() throws Exception {
+        Path modDir = tempDir.resolve("mod");
+        Files.createDirectories(modDir);
+        Files.createFile(tempDir.resolve("outside.jar"));
+        Files.writeString(modDir.resolve("mod.info"), """
+            javaJarFile=../outside.jar
+            javaPkgName=some.pkg
+            """);
+        assertNull(JavaModInfo.parse(modDir));
+    }
+
+    @Test
+    void rejectsAbsoluteJarPath() throws Exception {
+        Path jar = tempDir.resolve("absolute.jar");
+        Files.createFile(jar);
+        writeModInfo("javaJarFile=" + jar.toAbsolutePath() + "\njavaPkgName=some.pkg\n");
+        assertNull(JavaModInfo.parse(tempDir));
+    }
+
+    @Test
+    void allowsJarInsideModRoot() throws Exception {
+        Files.createDirectories(tempDir.resolve("media/java"));
+        Files.createFile(tempDir.resolve("media/java/inside.jar"));
+        writeModInfo("""
+            javaJarFile=media/java/inside.jar
+            javaPkgName=some.pkg
+            """);
+        JavaModInfo info = JavaModInfo.parse(tempDir);
+        assertNotNull(info);
+        assertEquals(tempDir.resolve("media/java/inside.jar"), info.jarPath());
+    }
+
+    @Test
+    void allowsB42ParentLibsInsideModRoot() throws Exception {
+        Path modRoot = tempDir.resolve("TestMod");
+        Path common = modRoot.resolve("common");
+        Path version = modRoot.resolve("42");
+        Files.createDirectories(common);
+        Files.createDirectories(version);
+        Files.createDirectories(modRoot.resolve("libs"));
+        Files.createFile(modRoot.resolve("libs/TestMod.jar"));
+        Files.writeString(version.resolve("mod.info"), """
+            javaJarFile=../libs/TestMod.jar
+            javaPkgName=some.pkg
+            """);
+
+        JavaModInfo info = JavaModInfo.parseMerged(common, version);
+        assertNotNull(info);
+        assertEquals(modRoot.resolve("libs/TestMod.jar"), info.jarPath());
+    }
+
+    @Test
+    void rejectsB42ParentLibsOutsideModRoot() throws Exception {
+        Path modRoot = tempDir.resolve("TestMod");
+        Path common = modRoot.resolve("common");
+        Path version = modRoot.resolve("42");
+        Files.createDirectories(common);
+        Files.createDirectories(version);
+        Files.createFile(tempDir.resolve("outside.jar"));
+        Files.writeString(version.resolve("mod.info"), """
+            javaJarFile=../../outside.jar
+            javaPkgName=some.pkg
+            """);
+
+        assertNull(JavaModInfo.parseMerged(common, version));
+    }
+
+    @Test
+    void rejectsSymlinkEscapeFromModRoot() throws Exception {
+        Path modDir = tempDir.resolve("mod");
+        Files.createDirectories(modDir);
+        Path target = tempDir.resolve("outside.jar");
+        Files.createFile(target);
+        Path link = modDir.resolve("link.jar");
+        try {
+            Files.createSymbolicLink(link, target);
+        } catch (UnsupportedOperationException | java.io.IOException e) {
+            return; // Filesystem does not support symlinks.
+        }
+        Files.writeString(modDir.resolve("mod.info"), """
+            javaJarFile=link.jar
+            javaPkgName=some.pkg
+            """);
+        assertNull(JavaModInfo.parse(modDir));
+    }
+
+    @Test
+    void versionDirAllowsParentLibsInsideModRoot() throws Exception {
+        Path modRoot = tempDir.resolve("TestMod");
+        Path version = modRoot.resolve("42");
+        Files.createDirectories(version);
+        Files.createDirectories(modRoot.resolve("libs"));
+        Files.createFile(modRoot.resolve("libs/TestMod.jar"));
+        Files.writeString(version.resolve("mod.info"), """
+            javaJarFile=../libs/TestMod.jar
+            javaPkgName=some.pkg
+            """);
+
+        JavaModInfo info = JavaModInfo.parseVersionDir(version);
+        assertNotNull(info);
+        assertEquals(modRoot.resolve("libs/TestMod.jar"), info.jarPath());
+    }
+
+    @Test
+    void versionDirRejectsEscapeBeyondModRoot() throws Exception {
+        Path modRoot = tempDir.resolve("TestMod");
+        Path version = modRoot.resolve("42");
+        Files.createDirectories(version);
+        Files.createFile(tempDir.resolve("outside.jar"));
+        Files.writeString(version.resolve("mod.info"), """
+            javaJarFile=../../outside.jar
+            javaPkgName=some.pkg
+            """);
+
+        assertNull(JavaModInfo.parseVersionDir(version));
+    }
 }

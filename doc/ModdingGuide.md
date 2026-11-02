@@ -41,6 +41,11 @@ ZBVersionMax=1.5.0
 | `ZBVersionMax` | (Optional) Maximum ZombieBuddy version required (inclusive) |
 | `javaPreload` | (Optional) Set to `true` to request early loading. The JAR must also be signed and declare preload support in its manifest. |
 
+`javaJarFile` must be a relative path that stays inside the mod's root directory. Absolute paths,
+`..` escapes outside the root, and symlinks pointing outside the root are rejected. B42 mods may
+point at a shared `../libs` directory relative to the version directory as long as it remains
+inside the mod root.
+
 ### Client/server JAR paths
 
 ZombieBuddy skips loading a Java mod when the environment and JAR path don't match:

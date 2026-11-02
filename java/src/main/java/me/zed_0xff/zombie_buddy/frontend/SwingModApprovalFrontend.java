@@ -1,6 +1,8 @@
 package me.zed_0xff.zombie_buddy.frontend;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
 import java.util.Locale;
 
@@ -33,12 +35,19 @@ public final class SwingModApprovalFrontend implements ModApprovalFrontend {
             Logger.warn("Batch approval skipped: ZombieBuddy not loaded from a JAR (or path unknown)");
             return null;
         }
+        Path tmpDir = null;
         Path tmpIn = null;
         Path tmpOut = null;
         try {
-            tmpIn = java.nio.file.Files.createTempFile("zb-batch-req-", ".json");
-            tmpOut = java.nio.file.Files.createTempFile("zb-batch-resp-", ".json");
-            JarBatchApprovalProtocol.writeRequest(tmpIn, pending);
+            tmpDir = Files.createTempDirectory("zb-batch-");
+            try {
+                Files.setPosixFilePermissions(tmpDir, PosixFilePermissions.fromString("rwx------"));
+            } catch (UnsupportedOperationException ignored) {
+                // Windows / non-POSIX filesystem.
+            }
+            tmpIn = Files.createTempFile(tmpDir, "zb-batch-req-", ".json");
+            tmpOut = Files.createTempFile(tmpDir, "zb-batch-resp-", ".json");
+            String nonce = JarBatchApprovalProtocol.writeRequest(tmpIn, pending);
             String javaExe = Path.of(
                 System.getProperty("java.home"),
                 "bin",
@@ -63,11 +72,16 @@ public final class SwingModApprovalFrontend implements ModApprovalFrontend {
                 Logger.info("Batch approval subprocess exited with " + p.exitValue());
                 return null;
             }
-            List<JarBatchApprovalProtocol.Entry> lines = JarBatchApprovalProtocol.readResponse(tmpOut);
-            if (lines == null) {
+            JarBatchApprovalProtocol.ResponseEnvelope response = JarBatchApprovalProtocol.readResponseWithNonce(tmpOut);
+            if (response == null) {
                 Logger.warn("Batch approval response malformed");
                 return null;
             }
+            if (!nonce.equals(response.nonce())) {
+                Logger.warn("Batch approval response nonce mismatch; refusing response");
+                return null;
+            }
+            List<JarBatchApprovalProtocol.Entry> lines = response.entries();
             if (lines.size() != pending.size()) {
                 Logger.warn("Batch approval response row count mismatch");
                 return null;
@@ -80,17 +94,26 @@ public final class SwingModApprovalFrontend implements ModApprovalFrontend {
                     return null;
                 }
             }
-            return lines;
+            List<JarBatchApprovalProtocol.Entry> sanitized =
+                JarBatchApprovalProtocol.sanitizeResponse(pending, lines);
+            if (sanitized == null) {
+                Logger.warn("Batch approval response changed immutable request fields; refusing response");
+                return null;
+            }
+            return sanitized;
         } catch (Exception e) {
             Logger.error("Batch approval subprocess failed: " + e);
             return null;
         } finally {
             try {
                 if (tmpIn != null) {
-                    java.nio.file.Files.deleteIfExists(tmpIn);
+                    Files.deleteIfExists(tmpIn);
                 }
                 if (tmpOut != null) {
-                    java.nio.file.Files.deleteIfExists(tmpOut);
+                    Files.deleteIfExists(tmpOut);
+                }
+                if (tmpDir != null) {
+                    Files.deleteIfExists(tmpDir);
                 }
             } catch (Exception ignored) {
             }

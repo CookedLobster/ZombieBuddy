@@ -13,7 +13,7 @@ DEF1=$(NAME).def
 all: $(TARGET1)
 
 $(TARGET1): $(OBJECTS1)
-	$(CC) $(LDFLAGS) -o $@ $^ $(DEF1) -lkernel32 -luser32
+	$(CC) $(LDFLAGS) -o $@ $^ $(DEF1) -lkernel32 -luser32 -lbcrypt
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $<

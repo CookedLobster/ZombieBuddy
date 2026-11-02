@@ -15,8 +15,9 @@ The project is a legitimate Java-agent modding framework. The issues below are s
 ## Status summary
 
 **Implementation update (2026-11-02):** the High and Medium findings were fixed in this fork
-(`CookedLobster/ZombieBuddy`) together with the related ZB-16 UI consistency fix. Low and Info
-items retain their original status unless explicitly noted below.
+(`CookedLobster/ZombieBuddy`) together with the related ZB-16 UI consistency fix. The Low
+findings (ZB-06, ZB-07, ZB-08, ZB-09, ZB-10, ZB-11, ZB-13, ZB-14) were subsequently fixed in the
+same fork; Info items retain their original status unless explicitly noted below.
 
 | ID | Severity | Issue | Status |
 |---|---|---|---|
@@ -25,15 +26,15 @@ items retain their original status unless explicitly noted below.
 | ZB-03 | Medium | Steam ban status fails open and is path-dependent | **Fixed** |
 | ZB-04 | Medium-Low | TinyFD approval defaults to “Yes” on old game versions | **Fixed** |
 | ZB-05 | Medium (design) | Permissive defaults and trusted-author auto-approval | **Fixed** |
-| ZB-06 | Low | Dev-only launch args bypass approval/signature checks | Open |
-| ZB-07 | Low | Stealth mode bypasses multiplayer Lua checksum | Open |
-| ZB-08 | Low | Experimental reflection/debug API is exposed to Lua | Open |
-| ZB-09 | Low | Self-updater hardening gaps | Open |
-| ZB-10 | Low | `javaJarFile` path traversal | Open |
-| ZB-11 | Low | Build/installer supply-chain hardening | Open |
+| ZB-06 | Low | Dev-only launch args bypass approval/signature checks | **Fixed** |
+| ZB-07 | Low | Stealth mode bypasses multiplayer Lua checksum | **Fixed** |
+| ZB-08 | Low | Experimental reflection/debug API is exposed to Lua | **Fixed** |
+| ZB-09 | Low | Self-updater hardening gaps | **Fixed** |
+| ZB-10 | Low | `javaJarFile` path traversal | **Fixed** |
+| ZB-11 | Low | Build/installer supply-chain hardening | **Fixed** |
 | ZB-12 | Medium (process) | Author-list duplicate-ID/key-shadowing risk | **Fixed** |
-| ZB-13 | Low | Installer modifies Steam config without backup | Open |
-| ZB-14 | Low | Approval response validation is incomplete | Open |
+| ZB-13 | Low | Installer modifies Steam config without backup | **Fixed** |
+| ZB-14 | Low | Approval response validation is incomplete | **Fixed** |
 | ZB-15 | Info | `http_client_timeout` is documented but not implemented | Open |
 | ZB-16 | Info | Trust badge uses uploader ID instead of signer ID | **Fixed** (with ZB-05) |
 | ZB-17 | Info | Historical build artifacts remain in Git | Open |
@@ -353,7 +354,17 @@ If a user selects `frontend=tinyfd` on a pre-42.15 game and `TinyFileDialogs` is
 ## ZB-06 — Dev-only launch arguments bypass approval/signature checks
 
 **Severity:** Low  
-**Status:** Open
+**Status:** **Fixed in this fork** (2026-11-02)
+
+### Implementation notes
+
+- `Agent.isDevMode()` requires an explicit `dev=true`. `patches_jar` and `expose_classes` are
+  ignored with a warning unless dev mode is enabled.
+- `Patch_LuaManager` gates `lua_init_script` on dev mode and only accepts an existing file that
+  resolves inside the game working directory or the Project Zomboid cache directory.
+- `rake run` and the `test_patched` javaagent arguments pass `dev=true` because they are
+  development-only paths.
+- `doc/CommandLine.md` documents `dev=true` and the restrictions.
 
 ### Location
 
@@ -378,7 +389,15 @@ Anyone who can edit the game launch options can load arbitrary Java code or expo
 ## ZB-07 — Stealth mode bypasses the multiplayer Lua checksum
 
 **Severity:** Low  
-**Status:** Open
+**Status:** **Fixed in this fork** (2026-11-02)
+
+### Implementation notes
+
+- Stealth mode remains off by default.
+- Enabling it logs a prominent warning about the server-integrity exception and possible
+  violation of server rules or anti-cheat expectations. `Patch_NetChecksum` logs once when it
+  actually hides files.
+- The in-game option description and `doc/Installation.md` now document the warning.
 
 ### Location
 
@@ -402,7 +421,16 @@ This intentionally bypasses the server’s Lua file checksum for ZombieBuddy’s
 ## ZB-08 — Experimental reflection/debug API is exposed to Lua
 
 **Severity:** Low  
-**Status:** Open
+**Status:** **Fixed in this fork** (2026-11-02)
+
+### Implementation notes
+
+- Added `@Exposer.RequiresDevTools`; `zbUtils` and `WatchesAPI` are marked with it.
+- `Exposer` refuses to expose marked classes unless both `experimental=true` and
+  `devtools=true` are set. `Patch_KahluaThread` also gates its `tableget` interception, and
+  `PreMain` only initializes `WatchesAPI` when devtools are enabled.
+- `doc/DevDebugFunctions.md` and `doc/CommandLine.md` document the additional requirement and
+  warn that the helpers allow arbitrary field writes and method invocation.
 
 ### Location
 
@@ -426,7 +454,22 @@ When `experimental` is enabled, any Lua mod can use `zbcall`/`zbset` to invoke p
 ## ZB-09 — Self-updater hardening gaps
 
 **Severity:** Low  
-**Status:** Open
+**Status:** **Fixed in this fork** (2026-11-02)
+
+### Implementation notes
+
+- `verifyJarAndGetCerts` now requires every non-`META-INF` entry to be signed and requires all
+  signed entries to share the same signer certificate.
+- `verifyTrustedSigner` checks certificate validity, `digitalSignature` key usage, and compares
+  the leaf certificate SHA-256 with the pinned `EXPECTED_FINGERPRINT`.
+- `performUpdate` re-verifies the source, copies it to a staged temp file, verifies the staged
+  copy's hash and signature, and only then replaces the live JAR. If replacement fails after the
+  live JAR was moved aside, the `.bak` is restored.
+- Deferred Windows updates write `ZombieBuddy.jar.new` plus `ZombieBuddy.jar.new.sha256`.
+  `zbNative` computes the `.new` SHA-256 with BCrypt and refuses to apply it unless the sidecar
+  matches. This is an integrity marker, not a signature; the next Java startup still re-verifies
+  the JAR signature before loading.
+- Tests cover unsigned JAR rejection and signer certificate mismatch.
 
 ### Location
 
@@ -459,7 +502,17 @@ The historical JAR’s certificate fingerprint matches the pinned value, so the 
 ## ZB-10 — `javaJarFile` path traversal
 
 **Severity:** Low  
-**Status:** Open
+**Status:** **Fixed in this fork** (2026-11-02)
+
+### Implementation notes
+
+- `JavaModInfo.resolveJarPath` rejects absolute paths, lexical `..` escapes, and symlinks whose
+  real target leaves the mod root.
+- Containment is checked against the mod root. B42 `../libs` paths relative to the version
+  directory remain valid when they stay inside the mod's root (`parseVersionDir` uses the parent
+  of the version directory as the root).
+- Unit tests cover parent traversal, absolute paths, symlink escapes, and valid in-root
+  `../libs` resolution.
 
 ### Location
 
@@ -482,7 +535,22 @@ A malicious `mod.info` can use `../` or an absolute path to make the loader read
 ## ZB-11 — Build/installer supply-chain hardening
 
 **Severity:** Low  
-**Status:** Open
+**Status:** **Fixed in this fork** (2026-11-02)
+
+### Implementation notes
+
+- Added `distributionSha256Sum` to `java/gradle/wrapper/gradle-wrapper.properties`.
+- Added `java/gradle/verification-metadata.xml` with SHA-256 checksums for plugin and Maven
+  dependencies.
+- Added `doc/Build.md` documenting the wrapper checksum, dependency verification, and the
+  Gradle plugin trust boundary.
+- The installer now verifies that every `META-INF/*.RSA`/`*.DSA`/`*.EC` signature block contains
+  the pinned ZombieBuddy signing certificate before copying `ZombieBuddy.jar`.
+- `go mod tidy` removed the unused `github.com/jslay88/vdf` dependency and made
+  `github.com/andygrunwald/vdf` a direct dependency.
+- A CI workflow was added for Go installer tests, Gradle plugin/dependency verification, and the
+  wrapper checksum pin. A full Java compile/test job still requires the proprietary game JAR, so
+  that release-provenance work remains tracked under ZB-18.
 
 ### Location
 
@@ -556,7 +624,16 @@ The runtime trust root is also `master`; compromise of Zed’s Ed25519 private k
 ## ZB-13 — Installer modifies Steam config without backup
 
 **Severity:** Low  
-**Status:** Open
+**Status:** **Fixed in this fork** (2026-11-02)
+
+### Implementation notes
+
+- The installer creates a timestamped `.zb-backup-<timestamp>` copy before modifying or
+  deleting `ProjectZomboid64.json`, `ProjectZomboid64.bat`, `localconfig.vdf`, and core files.
+- Launcher/VDF writes use a temp file, `fsync`, and rename instead of truncating in place.
+- `manualPatchVDF` validates brace balance and that the new launch options were actually applied
+  before replacing the file, and prints the old/new launch-option diff.
+- Tests cover VDF backup creation.
 
 ### Location
 
@@ -582,7 +659,21 @@ The installer modifies `ProjectZomboid64.json`, `ProjectZomboid64.bat`, and Stea
 ## ZB-14 — Approval response validation is incomplete
 
 **Severity:** Low (local-only)  
-**Status:** Open
+**Status:** **Fixed in this fork** (2026-11-02)
+
+### Implementation notes
+
+- The Swing approval subprocess now uses a private `0700` temporary directory with `0600`
+  request/response files.
+- Requests include a random nonce; the dialog echoes it in the response and the parent rejects a
+  missing or mismatched nonce.
+- `JarBatchApprovalProtocol.sanitizeResponse` validates mod ID, SHA-256, JAR/mod paths, Workshop
+  ID, date, ZBS data, and Steam ban data against the request. It rejects path changes and strips
+  `MF_PRELOAD`/`MF_TRUST_AUTHOR` unless the request permitted them.
+- `Loader.applyBatchApprovalLines` now applies only the sanitized response and uses request paths
+  for preload records.
+- Tests cover nonce round-trip, path-change rejection, preload/trust flag constraints, and
+  forced denial for banned mods.
 
 ### Location
 
@@ -809,14 +900,14 @@ Use this when re-cloning upstream:
 - [x] Fix Steam ban tri-state (ZB-03).
 - [x] Fix TinyFD fail-open (ZB-04).
 - [x] Review `allow_unsigned_mods`, trusted-author precedence, and server/session defaults (ZB-05).
-- [ ] Gate `patches_jar`, `expose_classes`, `lua_init_script`, and experimental reflection (ZB-06/ZB-08).
-- [ ] Review stealth mode and document/limit it (ZB-07).
-- [ ] Harden self-updater and native `.new` handling (ZB-09).
-- [ ] Enforce module-root containment for `javaJarFile` (ZB-10).
-- [ ] Add Gradle checksum/dependency verification and installer signature checks (ZB-11).
+- [x] Gate `patches_jar`, `expose_classes`, `lua_init_script`, and experimental reflection (ZB-06/ZB-08).
+- [x] Review stealth mode and document/limit it (ZB-07).
+- [x] Harden self-updater and native `.new` handling (ZB-09).
+- [x] Enforce module-root containment for `javaJarFile` (ZB-10).
+- [x] Add Gradle checksum/dependency verification and installer signature checks (ZB-11).
 - [x] Add duplicate-ID/key checks to the author-list pipeline (ZB-12).
-- [ ] Back up Steam config before installer changes (ZB-13).
-- [ ] Validate all approval-response fields (ZB-14).
+- [x] Back up Steam config before installer changes (ZB-13).
+- [x] Validate all approval-response fields (ZB-14).
 - [ ] Fix `http_client_timeout` (ZB-15).
 - [x] Use signer ID for trust badges (ZB-16).
 - [ ] Remove historical binaries and add release provenance (ZB-17/ZB-18).
@@ -825,10 +916,16 @@ Use this when re-cloning upstream:
 
 ### Validation performed
 
-- `compileJava`, `compilePatchesJava`, and `compileExperimentalJava` — successful.
-- `unitTest` — 185/185 passed (includes new `HttpAuth`, `KnownAuthors`, ban tri-state,
-  preload-config, and TinyFD fail-closed tests).
+- `compileJava`, `compilePatchesJava`, and `compileExperimentalJava` — successful (Java 27).
+- `unitTest` — 209/209 passed (includes new dev-mode, `javaJarFile` containment,
+  approval-response sanitization, and self-updater tests).
 - `test_vanilla` — 27/27 passed.
 - `test_patched` — 33/48 passed, 7 failed, 8 skipped. The same 7 failures reproduce on a clean
   `7794d9f` worktree with Java 27 (patched-test harness class-loading / `NoClassDefFoundError`),
   so they are not caused by these changes. Re-run with the project’s pinned JDK 25 before release.
+- Installer: `go vet ./...` and `go test ./...` — passed; `go mod tidy` completed.
+- Native launcher: `make` in `c/windows/` — successful with the MinGW cross-compiler.
+- Gradle dependency verification metadata generated and a subsequent `unitTest` run passed with
+  verification enabled.
+- The installer JAR-signature check and `SelfUpdater.verifyTrustedSigner` were smoke-tested
+  against the historical signed JAR in Git history; both accepted the pinned certificate.

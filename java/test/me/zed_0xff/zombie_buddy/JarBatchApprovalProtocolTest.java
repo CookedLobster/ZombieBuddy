@@ -234,4 +234,143 @@ class JarBatchApprovalProtocolTest {
             return new String(is.readAllBytes(), StandardCharsets.UTF_8);
         }
     }
+
+    private static JarBatchApprovalProtocol.Entry approvalEntry(
+        String modId,
+        Path jarPath,
+        ModFlags flags,
+        JarBatchApprovalProtocol.Entry.ZBSignature zbs,
+        JarBatchApprovalProtocol.Entry.SteamBan ban
+    ) {
+        return new JarBatchApprovalProtocol.Entry(
+            modId,
+            new WorkshopItemID(1234567890L),
+            jarPath,
+            Path.of("/mods/" + modId + "/mod.info"),
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            new Date(1_777_000_000_000L),
+            Boolean.TRUE,
+            flags,
+            modId,
+            zbs,
+            ban
+        );
+    }
+
+    @Test
+    void requestResponseNonceRoundTrip() throws IOException {
+        Path reqPath = tempDir.resolve("nonce_request.json");
+        Path respPath = tempDir.resolve("nonce_response.json");
+        List<JarBatchApprovalProtocol.Entry> entries = new ArrayList<>();
+        entries.add(approvalEntry("NonceMod", Path.of("/mods/NonceMod/NonceMod.jar"),
+            ModFlags.EMPTY, JarBatchApprovalProtocol.Entry.ZBSignature.none(), null));
+
+        String nonce = JarBatchApprovalProtocol.writeRequest(reqPath, entries);
+        assertNotNull(nonce);
+        assertFalse(nonce.isBlank());
+        assertEquals(nonce, JarBatchApprovalProtocol.readRequestWithNonce(reqPath).nonce());
+
+        JarBatchApprovalProtocol.writeResponse(respPath, entries, nonce);
+        assertEquals(nonce, JarBatchApprovalProtocol.readResponseWithNonce(respPath).nonce());
+    }
+
+    @Test
+    void sanitizeResponseRejectsChangedPath() {
+        JarBatchApprovalProtocol.Entry expected = approvalEntry("PathMod", Path.of("/mods/PathMod/a.jar"),
+            ModFlags.EMPTY, JarBatchApprovalProtocol.Entry.ZBSignature.none(), null);
+        JarBatchApprovalProtocol.Entry actual = approvalEntry("PathMod", Path.of("/mods/PathMod/b.jar"),
+            ModFlags.EMPTY, JarBatchApprovalProtocol.Entry.ZBSignature.none(), null);
+
+        assertNull(JarBatchApprovalProtocol.sanitizeResponse(List.of(expected), List.of(actual)));
+    }
+
+    @Test
+    void sanitizeResponseDropsUnrequestedPreload() {
+        JarBatchApprovalProtocol.Entry expected = approvalEntry("PreloadMod", Path.of("/mods/PreloadMod/a.jar"),
+            ModFlags.EMPTY, JarBatchApprovalProtocol.Entry.ZBSignature.none(), null);
+        JarBatchApprovalProtocol.Entry actual = approvalEntry("PreloadMod", Path.of("/mods/PreloadMod/a.jar"),
+            new ModFlags(ModFlags.MF_PRELOAD), JarBatchApprovalProtocol.Entry.ZBSignature.none(), null);
+
+        List<JarBatchApprovalProtocol.Entry> sanitized =
+            JarBatchApprovalProtocol.sanitizeResponse(List.of(expected), List.of(actual));
+        assertNotNull(sanitized);
+        assertFalse(sanitized.get(0).flags.has(ModFlags.MF_PRELOAD));
+    }
+
+    @Test
+    void sanitizeResponseKeepsRequestedPreload() {
+        JarBatchApprovalProtocol.Entry expected = approvalEntry("PreloadMod", Path.of("/mods/PreloadMod/a.jar"),
+            new ModFlags(ModFlags.MF_PRELOAD), JarBatchApprovalProtocol.Entry.ZBSignature.none(), null);
+        JarBatchApprovalProtocol.Entry actual = approvalEntry("PreloadMod", Path.of("/mods/PreloadMod/a.jar"),
+            new ModFlags(ModFlags.MF_PRELOAD), JarBatchApprovalProtocol.Entry.ZBSignature.none(), null);
+
+        List<JarBatchApprovalProtocol.Entry> sanitized =
+            JarBatchApprovalProtocol.sanitizeResponse(List.of(expected), List.of(actual));
+        assertNotNull(sanitized);
+        assertTrue(sanitized.get(0).flags.has(ModFlags.MF_PRELOAD));
+    }
+
+    @Test
+    void sanitizeResponseKeepsTrustForValidAuthor() {
+        JarBatchApprovalProtocol.Entry.ZBSignature valid =
+            new JarBatchApprovalProtocol.Entry.ZBSignature(true, new SteamID64(76561198000000000L), "");
+        JarBatchApprovalProtocol.Entry expected = approvalEntry("TrustMod", Path.of("/mods/TrustMod/a.jar"),
+            ModFlags.EMPTY, valid, null);
+        JarBatchApprovalProtocol.Entry actual = approvalEntry("TrustMod", Path.of("/mods/TrustMod/a.jar"),
+            new ModFlags(ModFlags.MF_TRUST_AUTHOR), valid, null);
+
+        List<JarBatchApprovalProtocol.Entry> sanitized =
+            JarBatchApprovalProtocol.sanitizeResponse(List.of(expected), List.of(actual));
+        assertNotNull(sanitized);
+        assertTrue(sanitized.get(0).flags.has(ModFlags.MF_TRUST_AUTHOR));
+    }
+
+    @Test
+    void sanitizeResponseDropsTrustWithoutValidSignature() {
+        JarBatchApprovalProtocol.Entry expected = approvalEntry("TrustMod", Path.of("/mods/TrustMod/a.jar"),
+            ModFlags.EMPTY, JarBatchApprovalProtocol.Entry.ZBSignature.none(), null);
+        JarBatchApprovalProtocol.Entry actual = approvalEntry("TrustMod", Path.of("/mods/TrustMod/a.jar"),
+            new ModFlags(ModFlags.MF_TRUST_AUTHOR), JarBatchApprovalProtocol.Entry.ZBSignature.none(), null);
+
+        List<JarBatchApprovalProtocol.Entry> sanitized =
+            JarBatchApprovalProtocol.sanitizeResponse(List.of(expected), List.of(actual));
+        assertNotNull(sanitized);
+        assertFalse(sanitized.get(0).flags.has(ModFlags.MF_TRUST_AUTHOR));
+    }
+
+    @Test
+    void sanitizeResponseForcesDenyForBannedMod() {
+        JarBatchApprovalProtocol.Entry expected = approvalEntry("BannedMod", Path.of("/mods/BannedMod/a.jar"),
+            ModFlags.EMPTY, JarBatchApprovalProtocol.Entry.ZBSignature.none(),
+            JarBatchApprovalProtocol.Entry.SteamBan.banned("banned"));
+        JarBatchApprovalProtocol.Entry actual = approvalEntry("BannedMod", Path.of("/mods/BannedMod/a.jar"),
+            ModFlags.EMPTY, JarBatchApprovalProtocol.Entry.ZBSignature.none(),
+            JarBatchApprovalProtocol.Entry.SteamBan.banned("banned"));
+
+        List<JarBatchApprovalProtocol.Entry> sanitized =
+            JarBatchApprovalProtocol.sanitizeResponse(List.of(expected), List.of(actual));
+        assertNotNull(sanitized);
+        assertEquals(Boolean.FALSE, sanitized.get(0).decision);
+    }
+
+    @Test
+    void sanitizeResponseIgnoresDisplayDateChanges() {
+        JarBatchApprovalProtocol.Entry expected = approvalEntry("DateMod", Path.of("/mods/DateMod/a.jar"),
+            ModFlags.EMPTY, JarBatchApprovalProtocol.Entry.ZBSignature.none(), null);
+        JarBatchApprovalProtocol.Entry actual = new JarBatchApprovalProtocol.Entry(
+            "DateMod",
+            new WorkshopItemID(1234567890L),
+            Path.of("/mods/DateMod/a.jar"),
+            Path.of("/mods/DateMod/mod.info"),
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            new Date(0L),
+            Boolean.TRUE,
+            ModFlags.EMPTY,
+            "DateMod",
+            JarBatchApprovalProtocol.Entry.ZBSignature.none(),
+            null
+        );
+
+        assertNotNull(JarBatchApprovalProtocol.sanitizeResponse(List.of(expected), List.of(actual)));
+    }
 }

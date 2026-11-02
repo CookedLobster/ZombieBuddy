@@ -1,11 +1,17 @@
 package me.zed_0xff.zombie_buddy;
 
 import java.io.InputStream;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.security.MessageDigest;
 import java.security.cert.Certificate;
+import java.security.cert.CertificateExpiredException;
+import java.security.cert.CertificateNotYetValidException;
 import java.security.cert.X509Certificate;
+import java.util.Arrays;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.jar.Manifest;
@@ -64,36 +70,102 @@ public final class SelfUpdater {
     }
 
     public static void performUpdate(Path currentJarPath, Path newJarPath, String newVersion) {
-        if (currentJarPath == null) {
+        if (currentJarPath == null || newJarPath == null) {
             return;
         }
-        pendingNewVersion = newVersion;
-        Logger.info("replacing " + currentJarPath + " with " + newJarPath);
+        Path staged = null;
         try {
-            Path backupPath = currentJarPath.resolveSibling(currentJarPath.getFileName() + ".bak");
-            if (Files.exists(currentJarPath)) {
-                try {
-                    Files.move(currentJarPath, backupPath, StandardCopyOption.REPLACE_EXISTING);
-                    Logger.info("Renamed existing JAR to " + backupPath);
-                } catch (Exception e) {
-                    Logger.info("Could not rename existing JAR (may be locked): " + e.getMessage());
-                }
+            Path current = currentJarPath.toAbsolutePath();
+            Path source = newJarPath.toAbsolutePath();
+            Path dir = current.getParent();
+            if (dir == null) {
+                Logger.error("Cannot determine the ZombieBuddy JAR directory; update aborted.");
+                return;
             }
 
-            Files.copy(newJarPath, currentJarPath, StandardCopyOption.REPLACE_EXISTING);
-            Logger.info("Successfully replaced JAR file");
-        } catch (Exception e) {
-            Logger.error("Error replacing JAR file: " + e.getMessage());
-            Logger.error("JAR may be locked (e.g., on Windows). Copying to .new file for deferred update...");
-            try {
-                Path deferredPath = currentJarPath.resolveSibling(currentJarPath.getFileName() + ".new");
-                Files.copy(newJarPath, deferredPath, StandardCopyOption.REPLACE_EXISTING);
-                Logger.info("Copied new JAR to " + deferredPath + " - update will be applied on next game launch");
-            } catch (Exception e2) {
-                Logger.error("Error copying to .new file: " + e2.getMessage());
-                Logger.printStackTrace(e2);
+            // Re-verify the source immediately before copying, then verify the staged copy
+            // itself so a local swap between verification and copy cannot slip through.
+            verifyTrustedSigner(source);
+            String sourceHash = Utils.sha256Hex(source);
+            if (Utils.isBlank(sourceHash)) {
+                Logger.error("Could not hash the update JAR " + source + "; update aborted.");
+                return;
             }
+
+            Files.createDirectories(dir);
+            staged = Files.createTempFile(dir, current.getFileName().toString() + ".", ".newtmp");
+            Files.copy(source, staged, StandardCopyOption.REPLACE_EXISTING);
+            String stagedHash = Utils.sha256Hex(staged);
+            if (!sourceHash.equals(stagedHash)) {
+                Logger.error("Staged update JAR hash mismatch (expected " + sourceHash
+                    + ", got " + stagedHash + "); update aborted.");
+                return;
+            }
+            verifyTrustedSigner(staged);
+
+            Logger.info("replacing " + current + " with " + source);
+            Path backupPath = current.resolveSibling(current.getFileName() + ".bak");
+            Path deferredPath = current.resolveSibling(current.getFileName() + ".new");
+            Path deferredHashPath = current.resolveSibling(current.getFileName() + ".new.sha256");
+            boolean movedCurrent = false;
+
+            try {
+                if (Files.exists(current)) {
+                    Files.move(current, backupPath, StandardCopyOption.REPLACE_EXISTING);
+                    movedCurrent = true;
+                    Logger.info("Renamed existing JAR to " + backupPath);
+                }
+                moveReplace(staged, current);
+                staged = null;
+                Files.deleteIfExists(deferredHashPath);
+                pendingNewVersion = newVersion;
+                Logger.info("Successfully replaced JAR file");
+            } catch (Exception e) {
+                Logger.error("Error replacing JAR file: " + e.getMessage());
+                // If the live JAR was moved aside but the replacement failed, restore it.
+                if (movedCurrent && !Files.exists(current)) {
+                    try {
+                        Files.move(backupPath, current, StandardCopyOption.REPLACE_EXISTING);
+                        Logger.info("Restored the previous JAR from " + backupPath);
+                    } catch (Exception restoreError) {
+                        Logger.error("Could not restore the previous JAR from " + backupPath + ": "
+                            + restoreError.getMessage());
+                    }
+                }
+                Logger.error("JAR may be locked (e.g., on Windows). Copying to .new file for deferred update...");
+                try {
+                    moveReplace(staged, deferredPath);
+                    staged = null;
+                    // The native launcher only applies .new when this hash matches. This
+                    // catches partial writes and accidental mismatches; it is not a signature.
+                    Utils.writeFileAtomic(deferredHashPath, stagedHash + "\n", java.nio.charset.StandardCharsets.UTF_8);
+                    pendingNewVersion = newVersion;
+                    Logger.info("Copied verified new JAR to " + deferredPath
+                        + " - update will be applied on next game launch");
+                } catch (Exception e2) {
+                    Logger.error("Error copying to .new file: " + e2.getMessage());
+                    Logger.printStackTrace(e2);
+                }
+                Logger.printStackTrace(e);
+            }
+        } catch (Exception e) {
+            Logger.error("Error preparing JAR update: " + e.getMessage());
             Logger.printStackTrace(e);
+        } finally {
+            if (staged != null) {
+                try {
+                    Files.deleteIfExists(staged);
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
+    private static void moveReplace(Path source, Path target) throws Exception {
+        try {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException | FileAlreadyExistsException e) {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
@@ -103,35 +175,82 @@ public final class SelfUpdater {
         }
 
         try {
-            Certificate[] certs = verifyJarAndGetCerts(jarPath);
-            if (certs == null || certs.length == 0) {
+            X509Certificate signer = verifyTrustedSigner(jarPath);
+            if (signer == null) {
                 return false;
             }
 
             if (verbosity > 0) {
-                Logger.info("" + jarPath + " is signed with " + certs.length + " certificate(s)");
+                Logger.info("" + jarPath + " is signed by the expected ZombieBuddy certificate");
             }
 
-            for (int certIdx = 0; certIdx < certs.length; certIdx++) {
-                if (certs[certIdx] instanceof X509Certificate) {
-                    X509Certificate x509Cert = (X509Certificate) certs[certIdx];
-                    byte[] fingerprint = getCertFingerprint(x509Cert, certIdx + 1, verbosity);
-                    if (fingerprint != null && java.util.Arrays.equals(fingerprint, EXPECTED_FINGERPRINT)) {
-                        Manifest manifest = getJarManifest(jarPath);
-                        if (manifest != null) {
-                            String manifestVersion = manifest.getMainAttributes().getValue("Implementation-Version");
-                            if (manifestVersion != null && Utils.isVersionNewer(manifestVersion, currentVersion)) {
-                                performUpdate(currentJarPath, jarPath, manifestVersion);
-                                return true;
-                            }
-                        }
-                    }
+            Manifest manifest = getJarManifest(jarPath);
+            if (manifest != null) {
+                String manifestVersion = manifest.getMainAttributes().getValue("Implementation-Version");
+                if (manifestVersion != null && Utils.isVersionNewer(manifestVersion, currentVersion)) {
+                    performUpdate(currentJarPath, jarPath, manifestVersion);
+                    return true;
                 }
             }
         } catch (Exception e) {
             Logger.error("Error verifying JAR signature: " + e.getMessage());
         }
         return false;
+    }
+
+    /**
+     * Verifies that the JAR is signed, that every signed entry uses the same signer, that the
+     * certificate chain is currently valid, and that the leaf certificate matches the pinned
+     * ZombieBuddy fingerprint.
+     */
+    static X509Certificate verifyTrustedSigner(Path jarPath) throws Exception {
+        Certificate[] certs = verifyJarAndGetCerts(jarPath);
+        if (certs == null || certs.length == 0) {
+            throw new SecurityException("No signed entries found");
+        }
+
+        X509Certificate leaf = null;
+        for (Certificate cert : certs) {
+            if (!(cert instanceof X509Certificate x509)) {
+                throw new SecurityException("Non-X.509 signer certificate");
+            }
+            try {
+                x509.checkValidity();
+            } catch (CertificateExpiredException | CertificateNotYetValidException e) {
+                throw new SecurityException("Signer certificate is not currently valid: " + e.getMessage(), e);
+            }
+            if (leaf == null) {
+                leaf = x509;
+            }
+        }
+        if (leaf == null) {
+            throw new SecurityException("No X.509 signer certificate");
+        }
+
+        // JAR code signing requires digitalSignature (bit 0). If keyUsage is absent,
+        // the certificate is not restricted and validity falls back to the CA basic
+        // constraints/signature checks performed by JarFile.
+        boolean[] keyUsage = leaf.getKeyUsage();
+        if (keyUsage != null && (keyUsage.length == 0 || !keyUsage[0])) {
+            throw new SecurityException("Signer certificate does not allow digital signatures");
+        }
+
+        byte[] fingerprint = Utils.sha256(leaf.getEncoded());
+        if (fingerprint == null || !Arrays.equals(fingerprint, EXPECTED_FINGERPRINT)) {
+            throw new SecurityException("JAR signer certificate fingerprint is not the expected ZombieBuddy key");
+        }
+        return leaf;
+    }
+
+    static boolean sameSignerCertificate(Certificate[] a, Certificate[] b) {
+        if (a == null || b == null || a.length == 0 || b.length == 0) {
+            return false;
+        }
+        try {
+            return MessageDigest.isEqual(a[0].getEncoded(), b[0].getEncoded());
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     public static Certificate[] verifyJarAndGetCerts(Path jarPath) throws Exception {
@@ -159,8 +278,12 @@ public final class SelfUpdater {
                     if (!isMeta) {
                         throw new SecurityException("Unsigned entry: " + name);
                     }
-                } else if (signer == null) {
-                    signer = certs;
+                } else if (!isMeta) {
+                    if (signer == null) {
+                        signer = certs;
+                    } else if (!sameSignerCertificate(signer, certs)) {
+                        throw new SecurityException("JAR has multiple signers (entry " + name + ")");
+                    }
                 }
             }
 

@@ -69,6 +69,14 @@ For dedicated servers or shared machines, prefer:
 policy=deny-new,allow_unsigned_mods=false
 ```
 
+### Stealth mode
+
+Stealth mode hides ZombieBuddy's own Lua files from the multiplayer `NetChecksum` when the
+server does not list ZombieBuddy. It is off by default and is a **server-integrity exception**:
+it may violate server rules or anti-cheat expectations. Enable it only if the server permits
+clients to run ZombieBuddy without adding it server-side. A warning is written to the log and the
+option description when it is enabled.
+
 ---
 
 ## Windows (Automated Installer)
@@ -88,11 +96,16 @@ The installer will:
 
 - Detect your Steam and Project Zomboid installation folders.
 - Find the ZombieBuddy Workshop content (ensure you are [subscribed on Steam](https://steamcommunity.com/sharedfiles/filedetails/?id=3619862853)).
+- Verify the `ZombieBuddy.jar` signing certificate before copying it.
 - Copy `zbNative.dll` and `ZombieBuddy.jar` to your game directory.
+- Create a timestamped `.zb-backup-<timestamp>` copy before modifying any launcher or Steam
+  configuration file.
 - Patch the selected launcher locations:
   - `ProjectZomboid64.json` for Normal Launch.
   - Steam launch options with `-agentlib:zbNative --`, if selected.
   - `ProjectZomboid64.bat` for Alternate Launch.
+- Write changed files through a temporary file and rename, so an interrupted write does not
+  leave a truncated configuration.
 
 If Steam launch options need to be changed, the installer asks you to close Steam at that point. It does not require Steam to be closed for launcher JSON/BAT edits or file copies.
 

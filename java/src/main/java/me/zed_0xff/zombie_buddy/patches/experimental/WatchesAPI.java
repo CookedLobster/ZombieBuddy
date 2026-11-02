@@ -27,6 +27,7 @@ import zombie.Lua.LuaManager;
  * Experimental API for watching arbitrary Java method calls.
  * Add/Remove/Clear watches; when a watched method is called, logs class, method, and arguments.
  */
+@Exposer.RequiresDevTools
 @Exposer.LuaClass(name = "ZombieBuddy.Watches")
 public class WatchesAPI {
 
