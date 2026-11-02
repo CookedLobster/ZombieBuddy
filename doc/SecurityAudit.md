@@ -3,7 +3,7 @@
 **Audit date:** 2026-11-02  
 **Audited revision:** `7794d9f974b509f9f800b266f76c15cd9eb6bfa6` (`master`, 2026-10-20)  
 **Repository:** `https://github.com/zed-0xff/ZombieBuddy`  
-**Fix fork:** `https://github.com/CookedLobster/ZombieBuddy` (`master` @ `ccd74bb`)  
+**Fix fork:** `https://github.com/CookedLobster/ZombieBuddy` (`master` @ `1c0b10f`)  
 **Scope:** static review of the full Git history, source, docs, scripts, historical binaries, images, signatures, network calls, and build files.
 
 ## Verdict
