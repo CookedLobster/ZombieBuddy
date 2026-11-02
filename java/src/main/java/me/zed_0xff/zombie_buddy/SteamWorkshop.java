@@ -102,13 +102,51 @@ public final class SteamWorkshop {
 
     private SteamWorkshop() {}
 
+    /** Tri-state Steam ban status. */
+    public enum BanStatus {
+        BANNED,
+        NOT_BANNED,
+        UNKNOWN
+    }
+
     /**
-     * Ban status info for a Workshop item.
-     * {@code status}: true = banned, false = not banned, null = unknown.
+     * Ban status info for a Workshop item. Unlike the previous Boolean model,
+     * unknown status is explicit and never treated as "not banned".
      */
-    public record BanInfo(Boolean status, String reason) {
+    public record BanInfo(BanStatus status, String reason) {
         public BanInfo {
+            status = status != null ? status : BanStatus.UNKNOWN;
             reason = reason != null ? reason : "";
+        }
+
+        /** Backward-compatible constructor for callers/tests that still use Boolean. */
+        public BanInfo(Boolean legacyStatus, String reason) {
+            this(
+                legacyStatus == null
+                    ? BanStatus.UNKNOWN
+                    : (legacyStatus ? BanStatus.BANNED : BanStatus.NOT_BANNED),
+                reason
+            );
+        }
+
+        public static BanInfo banned(String reason) {
+            return new BanInfo(BanStatus.BANNED, reason);
+        }
+
+        public static BanInfo notBanned() {
+            return new BanInfo(BanStatus.NOT_BANNED, "");
+        }
+
+        public static BanInfo unknown(String reason) {
+            return new BanInfo(BanStatus.UNKNOWN, reason);
+        }
+
+        public boolean isBanned() {
+            return status == BanStatus.BANNED;
+        }
+
+        public boolean isUnknown() {
+            return status == BanStatus.UNKNOWN;
         }
     }
 
@@ -197,14 +235,14 @@ public final class SteamWorkshop {
             }
             SteamID64 creator = parseCreatorSteamId64(it);
             out.put(id, new ItemDetails(
-                new BanInfo(banned != 0, reason),
+                new BanInfo(banned != 0 ? BanStatus.BANNED : BanStatus.NOT_BANNED, reason),
                 creator
             ));
         }
         for (WorkshopItemID id : chunk) {
             if (!seen.contains(id) && !out.containsKey(id)) {
                 out.put(id, new ItemDetails(
-                    new BanInfo(null, "Steam API response missing mod id"),
+                    BanInfo.unknown("Steam API response missing mod id"),
                     null
                 ));
             }
@@ -218,7 +256,7 @@ public final class SteamWorkshop {
     ) {
         for (WorkshopItemID id : workshopIds) {
             if (id == null) continue;
-            out.put(id, new ItemDetails(new BanInfo(null, reason), null));
+            out.put(id, new ItemDetails(BanInfo.unknown(reason), null));
         }
     }
 

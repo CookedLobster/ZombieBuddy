@@ -66,9 +66,26 @@ public final class JarBatchApprovalProtocol {
             this.steamBan = steamBan;
         }
 
-        public record SteamBan(String reason) {
+        public record SteamBan(SteamWorkshop.BanStatus status, String reason) {
             public SteamBan {
+                status = status != null ? status : SteamWorkshop.BanStatus.UNKNOWN;
                 reason = reason != null ? reason : "";
+            }
+
+            public static SteamBan banned(String reason) {
+                return new SteamBan(SteamWorkshop.BanStatus.BANNED, reason);
+            }
+
+            public static SteamBan unknown(String reason) {
+                return new SteamBan(SteamWorkshop.BanStatus.UNKNOWN, reason);
+            }
+
+            public boolean isBanned() {
+                return status == SteamWorkshop.BanStatus.BANNED;
+            }
+
+            public boolean isUnknown() {
+                return status == SteamWorkshop.BanStatus.UNKNOWN;
             }
         }
 

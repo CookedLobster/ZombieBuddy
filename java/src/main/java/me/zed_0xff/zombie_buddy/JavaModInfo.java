@@ -50,13 +50,26 @@ record JavaModInfo(
             p = p.getParent();
             depth--;
         }
-        if (p == null || p.getParent() == null) {
-            return null;
+        if (p != null && p.getParent() != null) {
+            Path ws = p.getParent();
+            Path wsName = ws.getFileName(); // null when ws is a filesystem root (e.g. "G:\\" or "/")
+            if (wsName != null && wsName.toString().equalsIgnoreCase("workshop") && Utils.isSameFile(ws.getParent(), Utils.getCachePath())) {
+                return workshopItemIdFromWorkshopTxtIn(p);
+            }
         }
-        Path ws = p.getParent();
-        Path wsName = ws.getFileName(); // null when ws is a filesystem root (e.g. "G:\\" or "/")
-        if (wsName != null && wsName.toString().equalsIgnoreCase("workshop") && Utils.isSameFile(ws.getParent(), Utils.getCachePath())) {
-            return workshopItemIdFromWorkshopTxtIn(p);
+
+        // Local/copied Workshop content may keep workshop.txt outside the Steam
+        // cache layout. Use that metadata instead of relying only on the path.
+        return workshopItemIdFromWorkshopTxtNear(path);
+    }
+
+    private static WorkshopItemID workshopItemIdFromWorkshopTxtNear(Path path) {
+        Path dir = path != null ? path.getParent() : null;
+        for (int depth = 0; dir != null && depth < 2; depth++, dir = dir.getParent()) {
+            WorkshopItemID id = workshopItemIdFromWorkshopTxtIn(dir);
+            if (id != null) {
+                return id;
+            }
         }
         return null;
     }

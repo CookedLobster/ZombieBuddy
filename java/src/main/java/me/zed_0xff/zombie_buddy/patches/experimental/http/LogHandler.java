@@ -16,7 +16,14 @@ public class LogHandler implements HttpHandler {
     @Override
     public void handle(HttpExchange exchange) throws IOException {
         HttpServer.logRequest(exchange);
+        if (!HttpServer.requireAuth(exchange)) {
+            return;
+        }
         int lines = HttpServer.parseIntParam(exchange.getRequestURI().getQuery(), "lines", 100);
+        if (lines <= 0) {
+            lines = 100;
+        }
+        lines = Math.min(lines, HttpServer.MAX_LOG_LINES);
         String logPath = ExpUtils.getConsoleLogPath();
 
         try {

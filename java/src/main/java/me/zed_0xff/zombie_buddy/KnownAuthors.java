@@ -199,15 +199,53 @@ public final class KnownAuthors {
         }
         try {
             FileData data = ZBGson.PRETTY.fromJson(body, FILE_DATA_TYPE);
-            if (data != null && data.authors != null) {
-                for (AuthorEntry e : data.authors) {
-                    if (e != null && e.id != null) {
-                        out.put(e.id, e);
+            if (data == null || data.authors == null) {
+                return out;
+            }
+
+            Map<String, SteamID64> keyOwners = new LinkedHashMap<>();
+            for (AuthorEntry author : data.authors) {
+                if (author == null || author.id == null) {
+                    Logger.warn("authors.json: rejecting list with a missing author id");
+                    return Collections.emptyMap();
+                }
+                if (out.containsKey(author.id)) {
+                    Logger.warn("authors.json: rejecting list with duplicate author id " + author.id);
+                    return Collections.emptyMap();
+                }
+                if (author.name == null) {
+                    author.name = "";
+                }
+
+                List<String> validKeys = new ArrayList<>();
+                if (author.keys != null) {
+                    for (String rawKey : author.keys) {
+                        if (Utils.isBlank(rawKey)) {
+                            continue;
+                        }
+                        String key = rawKey.trim().toLowerCase(java.util.Locale.ROOT);
+                        if (!key.matches("[0-9a-f]{64}")) {
+                            Logger.warn("authors.json: ignoring invalid key for author " + author.id);
+                            continue;
+                        }
+                        SteamID64 previousOwner = keyOwners.get(key);
+                        if (previousOwner != null && !previousOwner.equals(author.id)) {
+                            Logger.warn("authors.json: rejecting list with duplicate signing key shared by "
+                                + previousOwner + " and " + author.id);
+                            return Collections.emptyMap();
+                        }
+                        if (!validKeys.contains(key)) {
+                            validKeys.add(key);
+                            keyOwners.put(key, author.id);
+                        }
                     }
                 }
+                author.keys = validKeys;
+                out.put(author.id, author);
             }
         } catch (Exception e) {
             Logger.warn("Failed to parse authors.json: " + e.getMessage());
+            return Collections.emptyMap();
         }
         return out;
     }

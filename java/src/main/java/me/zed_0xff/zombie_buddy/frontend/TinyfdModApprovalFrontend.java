@@ -9,8 +9,6 @@ import me.zed_0xff.zombie_buddy.JarBatchApprovalProtocol;
 import me.zed_0xff.zombie_buddy.Logger;
 import me.zed_0xff.zombie_buddy.Reflect;
 import me.zed_0xff.zombie_buddy.Utils;
-import zombie.core.Core;
-import zombie.core.GameVersion;
 
 /**
  * LWJGL {@code TinyFileDialogs} (works when the game JVM is {@code java.awt.headless=true}).
@@ -48,6 +46,16 @@ public final class TinyfdModApprovalFrontend implements ModApprovalFrontend {
             return false;
         }
 
+        if (e.steamBan != null && e.steamBan.isBanned()) {
+            String reason = !Utils.isBlank(e.steamBan.reason()) ? "\n\nReason: " + e.steamBan.reason() : "";
+            tinyfdYesNo(
+                "Steam Workshop reports this item as banned.\n\n"
+                    + "Mod: " + e.modId + reason
+                    + "\n\nIt will be denied."
+            );
+            return false;
+        }
+
         String modified = formatDate(e.date);
         String zbsLine = "";
         if (e.zbs.valid() || e.zbs.invalid() || e.zbs.unsigned()) {
@@ -56,9 +64,16 @@ public final class TinyfdModApprovalFrontend implements ModApprovalFrontend {
                 + (!sid.isEmpty() ? " (Steam: " + sid + ")" : "")
                 + "\n\n";
         }
+        String banLine = "";
+        if (e.steamBan != null && e.steamBan.isUnknown()) {
+            banLine = "Steam ban status: UNKNOWN"
+                + (!Utils.isBlank(e.steamBan.reason()) ? " (" + e.steamBan.reason() + ")" : "")
+                + "\n\n";
+        }
         Boolean allow = tinyfdYesNo(
             "Allow Java mod to load?\n\n"
                 + zbsLine
+                + banLine
                 + "Mod: " + e.modId + "\n\n"
                 + "JAR: " + e.jarAbsolutePath + "\n\n"
                 + "Modified: " + modified + "\n\n"
@@ -90,16 +105,13 @@ public final class TinyfdModApprovalFrontend implements ModApprovalFrontend {
 
     /**
      * Returns TRUE (Yes), FALSE (No), or null if the dialog could not be shown.
+     * A missing dialog library is fail-closed: the caller treats null as "deny".
      */
-    private static Boolean tinyfdYesNo(String msg) {
+    static Boolean tinyfdYesNo(String msg) {
         Reflect r = Reflect.on("org.lwjgl.util.tinyfd.TinyFileDialogs");
         if (!r.isPresent()) {
-            if (Core.getInstance().getGameVersion().isGreaterThan(GameVersion.parse("42.14"))) {
-                Logger.error("tinyfdYesNo(): game version > 42.14 but TinyFileDialogs missing; returning null");
-                return null;
-            }
-            Logger.info("tinyfdYesNo(): pre-42.15 and TinyFileDialogs missing; defaulting YES");
-            return Boolean.TRUE;
+            Logger.error("TinyFileDialogs is unavailable; cannot show the approval dialog. Denying the mod. Use frontend=swing or frontend=console.");
+            return null;
         }
         try {
             return (boolean) Reflect

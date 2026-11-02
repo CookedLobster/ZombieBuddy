@@ -64,7 +64,9 @@ public final class SwingApprovalMain {
 
     private static final Color ZBS_ROW_OK = new Color(220, 255, 220);
     private static final Color ZBS_ROW_BAD = new Color(255, 210, 210);
+    private static final Color ZBS_ROW_WARN = new Color(255, 242, 204);
     private static final Color STEAM_BAN_NO = new Color(0, 128, 0);
+    private static final Color STEAM_BAN_UNKNOWN = new Color(170, 105, 0);
     private static final String DATE_FORMAT = "yyyy-MM-dd";
     private static final Insets HEADER_INSETS = new Insets(3, 8, 3, 8);
     private static final Insets ROW_INSETS = new Insets(0, 0, 0, 0);
@@ -131,7 +133,7 @@ public final class SwingApprovalMain {
     ) {
         final Set<String> authorsWithBannedMods = new HashSet<>();
         for (JarBatchApprovalProtocol.Entry e : entries) {
-            if (e.steamBan != null && e.zbs.authorSteamId() != null) {
+            if (e.steamBan != null && e.steamBan.isBanned() && e.zbs.authorSteamId() != null) {
                 authorsWithBannedMods.add(e.zbs.authorSteamId().toString());
             }
         }
@@ -219,8 +221,11 @@ public final class SwingApprovalMain {
             boolean zbsYes = e.zbs.valid();
             boolean zbsNo = e.zbs.invalid();
             boolean zbsUnsigned = e.zbs.unsigned();
-            boolean steamBanYes = e.steamBan != null;
-            Color rowBg = steamBanYes ? ZBS_ROW_BAD : (zbsYes ? ZBS_ROW_OK : (zbsNo ? ZBS_ROW_BAD : null));
+            boolean steamBanYes = e.steamBan != null && e.steamBan.isBanned();
+            boolean steamBanUnknown = e.steamBan != null && e.steamBan.isUnknown();
+            Color rowBg = steamBanYes
+                ? ZBS_ROW_BAD
+                : (steamBanUnknown ? ZBS_ROW_WARN : (zbsYes ? ZBS_ROW_OK : (zbsNo ? ZBS_ROW_BAD : null)));
 
             c.gridy = i + 1;
             c.gridx = COL_MOD;
@@ -315,14 +320,18 @@ public final class SwingApprovalMain {
             c.gridx = COL_STEAM_BAN;
             c.weightx = W_STEAM_BAN;
             c.fill = GridBagConstraints.BOTH;
-            JLabel banStatusLab = new JLabel(steamBanYes ? "Yes" : "No");
+            JLabel banStatusLab = new JLabel(steamBanYes ? "Yes" : (steamBanUnknown ? "Unknown" : "No"));
             banStatusLab.setHorizontalAlignment(SwingConstants.CENTER);
-            if (!steamBanYes) {
+            if (steamBanUnknown) {
+                banStatusLab.setForeground(STEAM_BAN_UNKNOWN);
+            } else if (!steamBanYes) {
                 banStatusLab.setForeground(STEAM_BAN_NO);
             }
             applyRowBackground(banStatusLab, rowBg);
             if (e.steamBan != null && !Utils.isBlank(e.steamBan.reason())) {
                 banStatusLab.setToolTipText(escapeHtml(e.steamBan.reason()));
+            } else if (steamBanUnknown) {
+                banStatusLab.setToolTipText("Steam ban status could not be verified. Review this mod carefully.");
             }
             grid.add(banStatusLab, c);
 
@@ -351,11 +360,15 @@ public final class SwingApprovalMain {
             c.fill = GridBagConstraints.BOTH;
             grid.add(radios, c);
 
-            boolean canTrustThisAuthor = showTrustColumn && zbsYes && !steamBanYes
+            boolean canTrustThisAuthor = showTrustColumn && zbsYes && e.steamBan == null
                 && (zbsSteamId.isEmpty() || !authorsWithBannedMods.contains(zbsSteamId));
             JCheckBox trustCb = new JCheckBox("", canTrustThisAuthor && e.flags.has(MF_TRUST_AUTHOR));
             trustCb.setEnabled(canTrustThisAuthor);
-            if (!canTrustThisAuthor && showTrustColumn && zbsYes && !zbsSteamId.isEmpty()
+            if (!canTrustThisAuthor && showTrustColumn && zbsYes && e.steamBan != null) {
+                trustCb.setToolTipText(e.steamBan.isBanned()
+                    ? "Cannot trust author: this mod has a Steam ban."
+                    : "Cannot trust author: Steam ban status is unknown.");
+            } else if (!canTrustThisAuthor && showTrustColumn && zbsYes && !zbsSteamId.isEmpty()
                     && authorsWithBannedMods.contains(zbsSteamId)) {
                 trustCb.setToolTipText("Cannot trust author: they have a banned mod in this batch.");
             }
@@ -390,7 +403,9 @@ public final class SwingApprovalMain {
         root.add(scroll, BorderLayout.CENTER);
 
         JLabel trustNotice = new JLabel(
-            "<html><small><i>\"Trust author\" means all mods by that author are auto-allowed while their digital signature remains valid and the mod is not banned.</i></small></html>");
+            "<html><small><i>\"Trust author\" auto-allows future signed mods from that author while the signature is valid and the Workshop item is not banned."
+                + "<br/>If the author's signing key is compromised, malicious updates load without another prompt. "
+                + "A stored denial for a specific JAR still wins.</i></small></html>");
         trustNotice.setAlignmentX(Component.LEFT_ALIGNMENT);
         JCheckBox savePersist = new JCheckBox("Save decisions to disk (persist across game launches)", false);
         savePersist.setHorizontalTextPosition(SwingConstants.LEADING);
@@ -486,7 +501,7 @@ public final class SwingApprovalMain {
                 for (int k = 0; k < entries.size(); k++) {
                     JarBatchApprovalProtocol.Entry e = entries.get(k);
                     boolean allow;
-                    if (e.zbs.invalid() || e.steamBan != null) {
+                    if (e.zbs.invalid() || (e.steamBan != null && e.steamBan.isBanned())) {
                         // Always deny rows that cannot be loaded safely.
                         allow = false;
                     } else {

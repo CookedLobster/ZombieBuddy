@@ -55,6 +55,19 @@ The policy is locked during `premain`, before any Java mod is on the classpath, 
 
 For all available command-line parameters, see [CommandLine.md](CommandLine.md).
 
+### Secure defaults
+
+- **Unsigned mods are denied by default.** A Java mod must ship a valid `.zbs` signature, or you must explicitly opt in with `allow_unsigned_mods=true`.
+- **Preloaded mods are hash-pinned.** A preload is only loaded while its JAR SHA-256 matches the approved hash and its Workshop ban status is known and not banned. Replacing the JAR or deleting its `.zbs` requires re-approval.
+- **Trusted authors are a convenience, not a safety guarantee.** Trusting an author auto-allows future signed mods from that author. If their signing key is compromised, malicious updates load without another prompt. An explicit stored deny for a specific JAR still wins.
+- **Steam ban status is tri-state.** Banned mods are blocked. If Steam cannot confirm the ban status of a Workshop item, the mod is not auto-approved and the approval dialog shows **Unknown** instead of a misleading green **No**.
+
+For dedicated servers or shared machines, prefer:
+
+```
+policy=deny-new,allow_unsigned_mods=false
+```
+
 ---
 
 ## Windows (Automated Installer)

@@ -72,16 +72,18 @@ Controls whether mods without ZBS signatures are allowed.
 
 | Value | Description |
 |-------|-------------|
-| `true` | (default) Allow mods without `.zbs` signature files |
-| `false` | Treat missing `.zbs` sidecar as an invalid signature (blocked unless `policy=allow-all`) |
+| `false` | (default) Treat missing `.zbs` sidecar as an invalid signature (blocked unless `policy=allow-all`) |
+| `true` | Allow mods without `.zbs` signature files (explicit opt-in) |
 
 **Example:**
 
 ```
--javaagent:ZombieBuddy.jar=allow_unsigned_mods=false --
+-javaagent:ZombieBuddy.jar=allow_unsigned_mods=true --
 ```
 
 > **Note:** Invalid signatures (present `.zbs` but verification fails) are always blocked when ZBS verification is enabled.
+>
+> **Security:** Preloaded Java mods must have a valid `.zbs` signature unless `policy=allow-all`. A preload entry is pinned to the approved JAR's SHA-256; replacing the JAR or deleting its `.zbs` requires re-approval.
 
 ---
 
@@ -172,13 +174,89 @@ This is equivalent to:
 
 ### experimental
 
-Enables experimental patches. This is a flag parameter (no value needed).
+Enables experimental patches, including the HTTP Lua API. This is a flag parameter (no value needed).
 
 **Example:**
 
 ```
 -javaagent:ZombieBuddy.jar=experimental --
 ```
+
+> **Warning:** Experimental features can expose game state and arbitrary Java/Lua capabilities. Keep them disabled outside development.
+
+---
+
+## Experimental HTTP Lua API
+
+The HTTP API is only available when `experimental` is enabled **and** `lua_server_port` is set. `POST /lua` executes Lua in the game process, so it is protected by a bearer token.
+
+### lua_server_host
+
+Bind address for the HTTP server. Default: `127.0.0.1`.
+
+Loopback addresses (`127.0.0.0/8`, `::1`, `localhost`) are always accepted. Any other address (`0.0.0.0`, `*`, a LAN IP, etc.) is refused and replaced with `127.0.0.1` unless `lua_server_allow_remote=true` is also set.
+
+### lua_server_allow_remote
+
+| Value | Description |
+|-------|-------------|
+| `false` | (default) Force loopback binding for non-loopback `lua_server_host` values |
+| `true` | Permit remote binding. The token is sent over cleartext HTTP; use a VPN or SSH tunnel |
+
+**Example:**
+
+```
+-javaagent:ZombieBuddy.jar=experimental,lua_server_host=0.0.0.0,lua_server_allow_remote=true --
+```
+
+### lua_server_port
+
+Port for the HTTP server. Use `random` or `0` for an ephemeral port. The chosen port is written to `zbLuaAPI.txt` in the game cache directory once the game finishes initializing.
+
+### lua_server_token
+
+Bearer token for `/`, `/lua`, and `/log`. It must be at least 32 characters and contain no whitespace.
+
+When omitted or invalid, ZombieBuddy generates a random 64-character hex token and writes it to `zbLuaAPI.token` next to `zbLuaAPI.txt` when the game finishes initializing. The file is created owner-only (`rw-------`) on POSIX systems.
+
+A generated token is not usable until it has been persisted. If the token file cannot be written, `/lua` and `/log` return `503`; `/status` and `/version` remain available for health checks.
+
+**Example:**
+
+```
+-javaagent:ZombieBuddy.jar=experimental,lua_server_port=4444,lua_server_token=<at-least-32-characters> --
+```
+
+### Authentication and limits
+
+Send exactly one of these headers:
+
+```
+X-ZombieBuddy-Token: <token>
+Authorization: Bearer <token>
+```
+
+- Tokens in the URL/query string are never accepted.
+- Requests with an `Origin` header are rejected with `403` to block browser-originated requests.
+- Missing or wrong tokens return `401` with `WWW-Authenticate: Bearer realm="ZombieBuddy"`.
+- `POST /lua` body limit: 1 MiB (`413` above the limit).
+- `GET /log?lines=N`: default 100, maximum 5000 lines.
+- The HTTP server uses a fixed pool of 4 worker threads.
+- `/status` and `/version` do not require a token.
+
+**Example request:**
+
+```
+curl -X POST "http://127.0.0.1:4444/lua" \
+  -H "X-ZombieBuddy-Token: $(cat ~/Zomboid/zbLuaAPI.token)" \
+  --data-binary 'print("hello")'
+```
+
+> **Security:** Any process that can read the token file can execute Lua in the game process. On shared machines, protect the game cache directory and prefer loopback binding. Remote binding exposes the token to network sniffing unless tunnelled.
+
+### lua_task_timeout
+
+Timeout in milliseconds for queued Lua tasks. Default: `5000`.
 
 ---
 

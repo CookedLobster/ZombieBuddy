@@ -58,12 +58,12 @@ public class Loader {
     public static boolean g_hasDoLoadingText = false;
 
     /**
-     * When {@code true} (default), a missing {@code .zbs} next to the JAR is allowed as &quot;unsigned&quot;
+     * When {@code true}, a missing {@code .zbs} next to the JAR is allowed as &quot;unsigned&quot;
      * (unless {@link #g_jarPolicy} is {@code allow-all}, which skips ZBS checks entirely).
-     * When {@code false}, missing {@code .zbs} is treated like a failed signature for prompt UI and load gating.
-     * Invalid signatures (present {@code .zbs} but verification fails) are always blocked when ZBS is enforced.
+     * Defaults to {@code false}: a missing {@code .zbs} is treated like a failed signature for
+     * prompt UI and load gating. Invalid signatures are always blocked when ZBS is enforced.
      */
-    static boolean g_allowUnsignedMods = true;
+    static boolean g_allowUnsignedMods = false;
 
     private static final String POLICY_PROMPT       = "prompt";
     private static final String POLICY_DENY_NEW     = "deny-new";
@@ -348,7 +348,7 @@ public class Loader {
             }
             if (entry.flags.has(MF_PRELOAD) && !Utils.isBlank(entry.modId) && !Utils.isBlank(entry.infAbsolutePath) && !Utils.isBlank(entry.jarAbsolutePath)) {
                 if (allow) {
-                    PreloadMods.add(entry.modId, entry.infAbsolutePath, entry.jarAbsolutePath);
+                    PreloadMods.add(entry.modId, entry.infAbsolutePath, entry.jarAbsolutePath, entry.sha256);
                 } else {
                     PreloadMods.remove(entry.modId);
                 }
@@ -390,8 +390,15 @@ public class Loader {
 
         private static final String MANIFEST_ATTR = "ZB-Preload";
 
-        private static void add(String id, Path infPath, Path jarPath) {
-            Config nextConfig = g_config.withPreloadMod(id, new Config.PreloadMod(infPath, jarPath));
+        private static void add(String id, Path infPath, Path jarPath, String sha256) {
+            if (Utils.isBlank(sha256)) {
+                Logger.warn("Not preloading mod '" + id + "': missing approved JAR hash.");
+                return;
+            }
+            Config nextConfig = g_config.withPreloadMod(
+                id,
+                new Config.PreloadMod(infPath, jarPath, sha256)
+            );
             if (!nextConfig.equals(g_config)) {
                 g_config = nextConfig;
                 g_configDirty = true;
@@ -432,6 +439,16 @@ public class Loader {
         }
     }
 
+    private static boolean hashesEqual(String expected, String actual) {
+        if (expected == null || actual == null) {
+            return false;
+        }
+        return java.security.MessageDigest.isEqual(
+            expected.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+            actual.getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        );
+    }
+
     static void preloadMods() {
         if (g_config.preload_mods().isEmpty()) {
             return;
@@ -463,21 +480,74 @@ public class Loader {
                     PreloadMods.remove(id);
                     continue;
                 }
-                entries.add(new PreloadEntry(id, javaPkgName, jarCanonicalPath, Utils.sha256Hex(jarCanonicalPath), JavaModInfo.workshopItemIdFromInfPath(preloadMod.infPath())));
+                if (Utils.isBlank(preloadMod.sha256())) {
+                    Logger.warn("Preload pkg '" + javaPkgName + "': no pinned JAR hash (legacy or malformed entry); removing. Re-approve the mod to preload it again.");
+                    PreloadMods.remove(id);
+                    continue;
+                }
+                String currentHash = Utils.sha256Hex(jarCanonicalPath);
+                if (!hashesEqual(preloadMod.sha256(), currentHash)) {
+                    Logger.warn("SECURITY: preloaded JAR hash changed for pkg '" + javaPkgName + "' at "
+                        + jarCanonicalPath + " — expected " + preloadMod.sha256() + ", got " + currentHash
+                        + "; removing preload entry. Re-approve the mod to load it.");
+                    PreloadMods.remove(id);
+                    continue;
+                }
+                entries.add(new PreloadEntry(id, javaPkgName, jarCanonicalPath, currentHash, JavaModInfo.workshopItemIdFromInfPath(preloadMod.infPath())));
             } catch (IOException ex) {
                 Logger.warn("Preload pkg '" + javaPkgName + "': cannot resolve JAR path " + preloadMod.jarPath() + "; removing.");
                 PreloadMods.remove(id);
             }
         }
-        if (entries.isEmpty()) return;
+        if (entries.isEmpty()) {
+            if (g_configDirty) {
+                Config.save(g_config);
+                g_configDirty = false;
+            }
+            return;
+        }
 
         ZBSContext zbsCtx = loadZBSContext(entries.stream().map(entry -> entry.workshopItemId()).toList());
 
-        // Second pass: ZBS check and load
+        // Second pass: ban/ZBS checks and load
         for (PreloadEntry entry : entries) {
+            SteamWorkshop.ItemDetails details = entry.workshopItemId() != null
+                ? zbsCtx.workshopDetailsById().get(entry.workshopItemId())
+                : null;
+            SteamWorkshop.BanInfo banInfo = details != null
+                ? details.ban()
+                : SteamWorkshop.BanInfo.unknown(
+                    entry.workshopItemId() != null
+                        ? "Steam Workshop details unavailable"
+                        : "Workshop id not found in mod path."
+                );
+            if (banInfo.isBanned()) {
+                Logger.warn("Preload pkg '" + entry.javaPkgName() + "': Steam Workshop item is banned"
+                    + (!Utils.isBlank(banInfo.reason()) ? " (" + banInfo.reason() + ")" : "")
+                    + "; removing preload entry.");
+                SteamID64 uploaderID = details != null ? details.creatorSteamId64() : null;
+                if (uploaderID != null && isAuthorTrusted(uploaderID)) {
+                    removeTrustedAuthor(uploaderID);
+                    Logger.warn("Removed trusted-author flag for " + uploaderID + " because a preloaded mod is banned.");
+                }
+                PreloadMods.remove(entry.id());
+                continue;
+            }
+            if (entry.workshopItemId() != null && banInfo.isUnknown()) {
+                Logger.warn("Preload pkg '" + entry.javaPkgName() + "': Steam ban status is unknown ("
+                    + banInfo.reason() + "); removing preload entry. Re-approve when Steam is reachable.");
+                PreloadMods.remove(entry.id());
+                continue;
+            }
+
             ZBSVerifier.CheckResult zbsResult = zbsCheck(entry.canJarPath(), entry.hash(), entry.workshopItemId(), zbsCtx);
             if (zbsBlocked(zbsResult)) {
                 Logger.warn("Preload pkg '" + entry.javaPkgName() + "': ZBS check failed (" + zbsResult.blockReason() + "); skipping.");
+                PreloadMods.remove(entry.id());
+                continue;
+            }
+            if (zbsSignatureChecksEnabled() && !zbsResult.flags().has(MF_SIGNED)) {
+                Logger.warn("Preload pkg '" + entry.javaPkgName() + "': preloads must have a valid .zbs signature; skipping.");
                 PreloadMods.remove(entry.id());
                 continue;
             }
@@ -786,7 +856,8 @@ public class Loader {
 
         // Pre-compute per-mod context to avoid duplicate work in prompt and load loops
         record ModCtx(String modId, Path jarPath, String hash, WorkshopItemID workshopItemId,
-                      SteamWorkshop.ItemDetails workshopDetails, SteamWorkshop.BanInfo banInfo, boolean steamBanned,
+                      SteamWorkshop.ItemDetails workshopDetails, SteamWorkshop.BanInfo banInfo,
+                      boolean steamBanned, boolean steamBanUnknown,
                       ZBSVerifier.CheckResult zbsResult) {}
         List<ModCtx> modContexts = new ArrayList<>();
 
@@ -797,11 +868,21 @@ public class Loader {
             String hash = Utils.sha256Hex(jarPath);
             WorkshopItemID workshopItemId = jModInfo.getWorkshopItemID();
             SteamWorkshop.ItemDetails workshopDetails = workshopItemId != null ? workshopDetailsById.get(workshopItemId) : null;
-            SteamWorkshop.BanInfo banInfo = workshopItemId == null
-                ? new SteamWorkshop.BanInfo(null, "Workshop id not found in mod path.")
-                : (workshopDetails != null ? workshopDetails.ban() : null);
-            boolean steamBanned = banInfo != null && Boolean.TRUE.equals(banInfo.status());
-            modContexts.add(new ModCtx(modId, jarPath, hash, workshopItemId, workshopDetails, banInfo, steamBanned, zbsCheck(jarPath, hash, workshopItemId, zbsCtx)));
+            SteamWorkshop.BanInfo banInfo;
+            if (workshopItemId == null) {
+                banInfo = SteamWorkshop.BanInfo.unknown("Workshop id not found in mod path.");
+            } else if (workshopDetails != null && workshopDetails.ban() != null) {
+                banInfo = workshopDetails.ban();
+            } else {
+                banInfo = SteamWorkshop.BanInfo.unknown("Steam Workshop details unavailable.");
+            }
+            boolean steamBanned = banInfo.isBanned();
+            // Only a real Workshop item can have a meaningful "unknown ban" check.
+            // Local/non-Workshop mods are reported as unknown in the UI but do not
+            // force a prompt on every launch.
+            boolean steamBanUnknown = workshopItemId != null && banInfo.isUnknown();
+            modContexts.add(new ModCtx(modId, jarPath, hash, workshopItemId, workshopDetails, banInfo,
+                steamBanned, steamBanUnknown, zbsCheck(jarPath, hash, workshopItemId, zbsCtx)));
         }
         for (ModCtx ctx : modContexts) {
             untrustAuthorForBannedMod(
@@ -840,9 +921,14 @@ public class Loader {
                 if (modDisplay == null || modDisplay.trim().isEmpty()) {
                     modDisplay = ctx.modId != null ? ctx.modId : "";
                 }
-                JarBatchApprovalProtocol.Entry.SteamBan steamBan = ctx.steamBanned
-                    ? new JarBatchApprovalProtocol.Entry.SteamBan(ctx.banInfo != null ? ctx.banInfo.reason() : "")
-                    : null;
+                JarBatchApprovalProtocol.Entry.SteamBan steamBan = null;
+                if (ctx.workshopItemId != null) {
+                    if (ctx.steamBanned) {
+                        steamBan = JarBatchApprovalProtocol.Entry.SteamBan.banned(ctx.banInfo.reason());
+                    } else if (ctx.steamBanUnknown) {
+                        steamBan = JarBatchApprovalProtocol.Entry.SteamBan.unknown(ctx.banInfo.reason());
+                    }
+                }
                 SteamID64 authorID = ctx.zbsResult.sid();
                 ModFlags flags = ctx.zbsResult.flags();
                 JarBatchApprovalProtocol.Entry.ZBSignature zbs = new JarBatchApprovalProtocol.Entry.ZBSignature(
@@ -856,20 +942,25 @@ public class Loader {
                     // so the user sees their earlier choices pre-filled in the dialog.
                     decision = g_sessionJarDecisions.get(ctx.hash);
                 }
-                if (!g_forceApprovalDialog && !ctx.steamBanned && zbs.valid() && isAuthorTrusted(authorID)) {
+                // A stored denial always wins over author trust. Unknown ban status
+                // must not auto-approve: force a prompt so the user sees it.
+                if (!g_forceApprovalDialog && !ctx.steamBanned && !ctx.steamBanUnknown
+                        && !Boolean.FALSE.equals(decision)
+                        && zbs.valid() && isAuthorTrusted(authorID)) {
                     // Auto-approve for this session only — trusted-author approvals are not persisted
                     // because the trust comes from the author record, not the specific JAR hash.
                     approvals.put(ctx.hash, Boolean.TRUE);
                     if (jModInfo.javaPreload() && PreloadMods.hasManifestPreload(ctx.jarPath)) {
-                        PreloadMods.add(ctx.modId, jModInfo.infPath(), ctx.jarPath);
+                        PreloadMods.add(ctx.modId, jModInfo.infPath(), ctx.jarPath, ctx.hash);
                     }
                     continue;
                 }
-                if (!g_forceApprovalDialog && !ctx.steamBanned) {
+                if (!g_forceApprovalDialog && !ctx.steamBanned && !ctx.steamBanUnknown) {
                     if (decision != null) continue;
                 }
                 ModFlags entryFlags = new ModFlags(isDecisionStored(ctx.hash, decision) ? MF_PERSIST : MF_NONE);
-                if (zbs.valid() && authorID != null && isAuthorTrusted(authorID) && !ctx.steamBanned) {
+                if (zbs.valid() && authorID != null && isAuthorTrusted(authorID)
+                        && !ctx.steamBanned && !ctx.steamBanUnknown) {
                     entryFlags = entryFlags.with(MF_TRUST_AUTHOR);
                 }
                 final boolean bHasManifestPreload = PreloadMods.hasManifestPreload(ctx.jarPath);
@@ -932,6 +1023,9 @@ public class Loader {
             if (!shouldSkip && ctx.steamBanned) {
                 shouldSkip = true;
                 skipReason = " (Steam Workshop mod is banned" + (!Utils.isBlank(ctx.banInfo.reason()) ? ": " + ctx.banInfo.reason() : "") + ", modId=" + ctx.modId + ")";
+            } else if (!shouldSkip && ctx.steamBanUnknown) {
+                Logger.warn("Steam ban status is unknown for " + ctx.modId + " (" + ctx.banInfo.reason()
+                    + "); the mod was not auto-approved.");
             }
 
             ModFlags flags = ctx.zbsResult == ZBSVerifier.CheckResult.DISABLED ? ModFlags.EMPTY : ctx.zbsResult.flags();
@@ -940,7 +1034,8 @@ public class Loader {
                 skipReason = " (" + ctx.zbsResult.blockReason() + ", modId=" + ctx.modId + ")";
             }
 
-            if (flags.hasAll(MF_VALID, MF_SIGNED) && isAuthorTrusted(ctx.zbsResult.uploaderID())) {
+            if (flags.hasAll(MF_VALID, MF_SIGNED) && !ctx.steamBanned && !ctx.steamBanUnknown
+                    && isAuthorTrusted(ctx.zbsResult.sid())) {
                 flags = flags.with(MF_TRUST_AUTHOR);
             }
 

@@ -110,6 +110,33 @@ class JarBatchApprovalProtocolTest {
     }
 
     @Test
+    void steamBanTriStateRoundTrip() throws IOException {
+        List<JarBatchApprovalProtocol.Entry> original = new ArrayList<>();
+        original.add(new JarBatchApprovalProtocol.Entry(
+            "UnknownBanMod",
+            new WorkshopItemID(1234567890L),
+            Path.of("/path/to/unknown.jar"),
+            Path.of("/path/to/mod.info"),
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            new Date(1_777_000_000_000L),
+            null,
+            ModFlags.EMPTY,
+            "Unknown Ban Mod",
+            JarBatchApprovalProtocol.Entry.ZBSignature.none(),
+            JarBatchApprovalProtocol.Entry.SteamBan.unknown("Steam API unavailable")
+        ));
+
+        Path reqPath = tempDir.resolve("unknown_ban_request.json");
+        JarBatchApprovalProtocol.writeRequest(reqPath, original);
+        JarBatchApprovalProtocol.Entry parsed = JarBatchApprovalProtocol.readRequest(reqPath).get(0);
+
+        assertNotNull(parsed.steamBan);
+        assertTrue(parsed.steamBan.isUnknown());
+        assertFalse(parsed.steamBan.isBanned());
+        assertEquals("Steam API unavailable", parsed.steamBan.reason());
+    }
+
+    @Test
     void responseRoundTrip_preservesData() throws IOException {
         List<JarBatchApprovalProtocol.Entry> original = new ArrayList<>();
         original.add(new JarBatchApprovalProtocol.Entry(

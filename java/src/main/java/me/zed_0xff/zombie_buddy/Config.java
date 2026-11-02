@@ -21,7 +21,8 @@ record Config(
 ) {
     record PreloadMod(
         Path infPath,
-        Path jarPath
+        Path jarPath,
+        String sha256
     ) {}
 
     static final String JSON_FILE_NAME = "config.json";
@@ -181,6 +182,8 @@ record Config(
     }
 
     private static boolean isValidPreloadMod(PreloadMod mod) {
+        // sha256 may be null for entries written by older ZombieBuddy versions;
+        // Loader.preloadMods() removes those and requires fresh approval.
         return mod != null && !Utils.isBlank(mod.infPath()) && !Utils.isBlank(mod.jarPath());
     }
 }

@@ -125,6 +125,8 @@ public class Main {
 
 Signed mods can request early loading with `javaPreload=true` in `mod.info` and the matching preload manifest entry in the JAR. When the user approves preload, ZombieBuddy loads the JAR during Java agent startup on the next game launch.
 
+Preload approval is pinned to the JAR's SHA-256 and its Steam Workshop ban status. Replacing the JAR, removing its `.zbs` signature, or losing the ability to confirm its ban status removes the preload entry and requires the user to approve the mod again. Preloads must be signed unless `policy=allow-all` is explicitly used.
+
 Add the manifest attribute to the JAR you distribute:
 
 ```text

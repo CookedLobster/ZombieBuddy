@@ -49,7 +49,9 @@ final class ImguiApprovalDialog {
             "This lets the mod hook earlier game code that is otherwise already loaded.");
     private static final int ROW_OK                     = ImColor.rgba(60, 110, 60, 80);
     private static final int ROW_BAD                    = ImColor.rgba(130, 55, 55, 95);
+    private static final int ROW_WARN                   = ImColor.rgba(130, 105, 40, 90);
     private static final int STEAM_BAN_NO               = ImColor.rgb(0, 170, 70);
+    private static final int STEAM_BAN_UNKNOWN          = ImColor.rgb(220, 165, 0);
     private static final int LINK                       = ImColor.rgb(80, 150, 255);
     private static final int ALLOW_CHECK_MARK           = ImColor.rgb(0, 255, 0);
     private static final int DENY_CROSS_MARK            = ImColor.rgb(255, 0, 0);
@@ -74,7 +76,7 @@ final class ImguiApprovalDialog {
     private static final String COL_STEAM_BAN           = "Steam ban status";
     private static final String COL_ALLOW               = "Allow";
     private static final String COL_TRUST_AUTHOR        = "Trust author";
-    private static final String TRUST_AUTHOR_TOOLTIP    = "Signed mods by that author can be auto-allowed while the signature remains valid and the mod is not banned.";
+    private static final String TRUST_AUTHOR_TOOLTIP    = "Signed mods by that author can be auto-allowed while the signature remains valid and the Workshop item is not banned.\nIf the author's signing key is compromised, malicious updates load without another prompt. A stored denial for a specific JAR still wins.";
     private static final String WATERMARK_ICON_RESOURCE = "zb_icon.png";
 
     private static IconTexture watermarkIcon;
@@ -109,7 +111,7 @@ final class ImguiApprovalDialog {
         for (int i = 0; i < entries.size(); i++) {
             JarBatchApprovalProtocol.Entry e = entries.get(i);
             this.authorGroupKey[i] = e.zbs.authorSteamId() != null ? e.zbs.authorSteamId().toString() : "";
-            if (e.steamBan != null && !this.authorGroupKey[i].isEmpty()) {
+            if (e.steamBan != null && e.steamBan.isBanned() && !this.authorGroupKey[i].isEmpty()) {
                 withBanned.add(this.authorGroupKey[i]);
             }
         }
@@ -418,8 +420,9 @@ final class ImguiApprovalDialog {
     private void drawRow(int index, JarBatchApprovalProtocol.Entry e) {
         boolean zbsYes = e.zbs.valid();
         boolean zbsNo = e.zbs.invalid();
-        boolean steamBanYes = e.steamBan != null;
-        int rowColor = steamBanYes || zbsNo ? ROW_BAD : (zbsYes ? ROW_OK : 0);
+        boolean steamBanYes = e.steamBan != null && e.steamBan.isBanned();
+        boolean steamBanUnknown = e.steamBan != null && e.steamBan.isUnknown();
+        int rowColor = steamBanYes || zbsNo ? ROW_BAD : (steamBanUnknown ? ROW_WARN : (zbsYes ? ROW_OK : 0));
 
         tableRowHeight = rowHeight(e);
         ImGui.tableNextRow(0, tableRowHeight);
@@ -504,13 +507,20 @@ final class ImguiApprovalDialog {
     }
 
     private void drawSteamBan(JarBatchApprovalProtocol.Entry e) {
-        if (e.steamBan != null) {
+        if (e.steamBan != null && e.steamBan.isBanned()) {
             cellCenteredTextColored(1.0f, 0.25f, 0.25f, 1.0f, "Yes");
+        } else if (e.steamBan != null && e.steamBan.isUnknown()) {
+            cellCenteredTextColored(STEAM_BAN_UNKNOWN, "Unknown");
         } else {
             cellCenteredTextColored(STEAM_BAN_NO, "No");
         }
-        if (e.steamBan != null && !Utils.isBlank(e.steamBan.reason())) {
-            showTooltipIfHovered(e.steamBan.reason());
+        if (e.steamBan != null) {
+            String tooltip = !Utils.isBlank(e.steamBan.reason())
+                ? e.steamBan.reason()
+                : (e.steamBan.isUnknown() ? "Steam ban status could not be verified. Review this mod carefully." : "");
+            if (!Utils.isBlank(tooltip)) {
+                showTooltipIfHovered(tooltip);
+            }
         }
     }
 
@@ -866,7 +876,7 @@ final class ImguiApprovalDialog {
     }
 
     private static boolean forceDeny(JarBatchApprovalProtocol.Entry e) {
-        return e.zbs.invalid() || e.steamBan != null;
+        return e.zbs.invalid() || (e.steamBan != null && e.steamBan.isBanned());
     }
 
     private boolean canTrustAuthor(JarBatchApprovalProtocol.Entry e) {
@@ -877,8 +887,11 @@ final class ImguiApprovalDialog {
     }
 
     private String trustAuthorDisabledTooltip(JarBatchApprovalProtocol.Entry e) {
-        if (e.steamBan != null) {
+        if (e.steamBan != null && e.steamBan.isBanned()) {
             return "Cannot trust author: this mod has a Steam ban.";
+        }
+        if (e.steamBan != null && e.steamBan.isUnknown()) {
+            return "Cannot trust author: Steam ban status is unknown.";
         }
         if (e.zbs.authorSteamId() != null && authorsWithBannedMods.contains(e.zbs.authorSteamId().toString())) {
             return "Cannot trust author: they have a banned mod in this batch.";

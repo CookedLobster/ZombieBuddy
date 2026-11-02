@@ -39,9 +39,16 @@ public final class ConsoleModApprovalFrontend implements ModApprovalFrontend {
             if (!Utils.isBlank(e.zbs.notice())) {
                 System.out.println("ZBS note:  " + e.zbs.notice());
             }
+            if (e.steamBan != null) {
+                System.out.println("Steam ban: " + e.steamBan.status()
+                    + (!Utils.isBlank(e.steamBan.reason()) ? " (" + e.steamBan.reason() + ")" : ""));
+            }
             boolean allow;
             if (e.zbs.invalid()) {
                 System.out.println("ZBS invalid — load will be denied.");
+                allow = false;
+            } else if (e.steamBan != null && e.steamBan.isBanned()) {
+                System.out.println("Steam Workshop item is banned — load will be denied.");
                 allow = false;
             } else {
                 allow = readYesNo("Allow this Java mod to load?");

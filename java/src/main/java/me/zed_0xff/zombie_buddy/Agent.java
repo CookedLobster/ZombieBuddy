@@ -67,8 +67,9 @@ public class Agent {
         // can't be the first to call Loader.setPolicy().
         Loader.setPolicy(arguments.getOrDefault("policy", "prompt"));
 
-        // When false, a missing .zbs sidecar is treated like an invalid signature (except policy=allow-all skips ZBS).
-        Loader.g_allowUnsignedMods = Boolean.parseBoolean(arguments.getOrDefault("allow_unsigned_mods", "true"));
+        // When false (default), a missing .zbs sidecar is treated like an invalid signature
+        // (except policy=allow-all skips ZBS). Set allow_unsigned_mods=true to opt out.
+        Loader.g_allowUnsignedMods = Boolean.parseBoolean(arguments.getOrDefault("allow_unsigned_mods", "false"));
         Logger.info("allow_unsigned_mods=" + Loader.g_allowUnsignedMods);
 
         // Java mod UI: auto (default), swing (Swing batch + TinyFD per-mod), tinyfd, console (stdin/headless).

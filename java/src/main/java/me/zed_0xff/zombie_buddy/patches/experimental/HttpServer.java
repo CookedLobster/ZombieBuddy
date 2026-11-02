@@ -1,7 +1,9 @@
 package me.zed_0xff.zombie_buddy.patches.experimental;
 
 import com.sun.net.httpserver.HttpExchange;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.invoke.VarHandle;
 import java.net.InetSocketAddress;
@@ -23,6 +25,7 @@ import zombie.Lua.LuaManager;
 import zombie.gameStates.GameLoadingState;
 
 import me.zed_0xff.zombie_buddy.Callbacks;
+import me.zed_0xff.zombie_buddy.HttpAuth;
 import me.zed_0xff.zombie_buddy.Logger;
 import me.zed_0xff.zombie_buddy.Reflect;
 import me.zed_0xff.zombie_buddy.Utils;
@@ -38,6 +41,17 @@ public class HttpServer {
     // Timeout for waiting for Lua task execution (in milliseconds)
     public static long luaTaskTimeoutMs = 5000;
     public static int g_verbosity = 0;
+
+    /** Maximum accepted {@code POST /lua} request body size. */
+    public static final int MAX_LUA_BODY_BYTES = 1024 * 1024;
+    /** Maximum number of lines returned by {@code GET /log}. */
+    public static final int MAX_LOG_LINES = 5000;
+    /** Fixed worker pool size; avoids unbounded thread creation from request floods. */
+    private static final int HTTP_WORKER_THREADS = 4;
+
+    private static volatile String authToken;
+    /** False until a generated token has been persisted (or a user-supplied token is in use). */
+    private static volatile boolean authReady;
     
     // Queue for Lua tasks to be executed on the main thread (for dedicated servers)
     private static final ConcurrentLinkedQueue<LuaTask> luaTaskQueue = new ConcurrentLinkedQueue<>();
@@ -273,7 +287,88 @@ public class HttpServer {
             return t;
         };
 
-        return Executors.newCachedThreadPool(factory);
+        return Executors.newFixedThreadPool(HTTP_WORKER_THREADS, factory);
+    }
+
+    /** Configures the bearer token required by the sensitive endpoints. */
+    public static void setAuthToken(String token) {
+        authToken = HttpAuth.isValidToken(token) ? token : null;
+        authReady = false;
+    }
+
+    /** Marks the configured token as usable. Generated tokens stay unusable until persisted. */
+    public static void setAuthReady(boolean ready) {
+        authReady = ready;
+    }
+
+    public static boolean isAuthReady() {
+        return authReady;
+    }
+
+    /**
+     * Enforces authentication for {@code /}, {@code /lua}, and {@code /log}.
+     *
+     * <p>Returns 503 when no usable token is configured, 403 for browser-originated
+     * requests (any {@code Origin} header), and 401 for a missing or wrong token.
+     *
+     * @return true when the request may proceed
+     */
+    public static boolean requireAuth(HttpExchange exchange) throws IOException {
+        if (exchange.getRequestHeaders().getFirst("Origin") != null) {
+            sendResponse(exchange, 403, "Cross-origin requests are not allowed\n");
+            return false;
+        }
+
+        String expected = authToken;
+        if (!authReady || !HttpAuth.isValidToken(expected)) {
+            sendResponse(exchange, 503, "HTTP API authentication is not configured\n");
+            return false;
+        }
+
+        String supplied = HttpAuth.extractToken(
+            exchange.getRequestHeaders().getFirst(HttpAuth.TOKEN_HEADER),
+            exchange.getRequestHeaders().getFirst(HttpAuth.AUTHORIZATION_HEADER)
+        );
+        if (!HttpAuth.isAuthorized(expected, supplied)) {
+            exchange.getResponseHeaders().set("WWW-Authenticate", "Bearer realm=\"ZombieBuddy\"");
+            sendResponse(exchange, 401, "Unauthorized\n");
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Reads at most {@code maxBytes} from the request body. Sends a 413 response and
+     * returns {@code null} when the body exceeds the limit.
+     */
+    public static byte[] readBodyLimited(HttpExchange exchange, int maxBytes) throws IOException {
+        String contentLength = exchange.getRequestHeaders().getFirst("Content-Length");
+        if (contentLength != null) {
+            try {
+                if (Long.parseLong(contentLength.trim()) > maxBytes) {
+                    sendResponse(exchange, 413, "Request body too large\n");
+                    return null;
+                }
+            } catch (NumberFormatException ignored) {
+                // Let the streaming limit below handle malformed lengths.
+            }
+        }
+
+        try (InputStream in = exchange.getRequestBody();
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192];
+            int total = 0;
+            int read;
+            while ((read = in.read(buffer)) >= 0) {
+                total += read;
+                if (total > maxBytes) {
+                    sendResponse(exchange, 413, "Request body too large\n");
+                    return null;
+                }
+                out.write(buffer, 0, read);
+            }
+            return out.toByteArray();
+        }
     }
 
     public int getPort() {
