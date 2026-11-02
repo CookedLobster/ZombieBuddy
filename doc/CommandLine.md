@@ -211,7 +211,7 @@ Loopback addresses (`127.0.0.0/8`, `::1`, `localhost`) are always accepted. Any 
 
 ### lua_server_port
 
-Port for the HTTP server. Use `random` or `0` for an ephemeral port. The chosen port is written to `zbLuaAPI.txt` in the game cache directory once the game finishes initializing.
+Port for the HTTP server. Use `random` or `0` for an ephemeral port. When using a random port, the chosen port is written to `zbLuaAPI.txt` in the game cache directory once the game finishes initializing.
 
 ### lua_server_token
 
