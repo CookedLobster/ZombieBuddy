@@ -829,6 +829,6 @@ Use this when re-cloning upstream:
 - `unitTest` — 185/185 passed (includes new `HttpAuth`, `KnownAuthors`, ban tri-state,
   preload-config, and TinyFD fail-closed tests).
 - `test_vanilla` — 27/27 passed.
-- `test_patched` — 33/48 passed, 7 failed, 8 skipped. The failures are pre-existing Java 27 /
-  patched-test harness class-loading issues (`NoClassDefFoundError` in the test JAR), not related
-  to these changes. Re-run with the project’s pinned JDK 25 before release.
+- `test_patched` — 33/48 passed, 7 failed, 8 skipped. The same 7 failures reproduce on a clean
+  `7794d9f` worktree with Java 27 (patched-test harness class-loading / `NoClassDefFoundError`),
+  so they are not caused by these changes. Re-run with the project’s pinned JDK 25 before release.
