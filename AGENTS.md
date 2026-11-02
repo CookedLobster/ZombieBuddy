@@ -136,9 +136,9 @@ These are release-blocking. Do not weaken them without an explicit instruction f
 
 ## Security audit
 
-The current audit is maintained outside the repository at `/root/ZombieBuddy-Audit.md` in the
-development environment. It records fixed and open findings. When implementing a finding, update
-that document’s status table and add implementation notes.
+The current audit is in [`doc/SecurityAudit.md`](doc/SecurityAudit.md). It records fixed and open
+findings. When implementing a finding, update its status table and add implementation notes both
+there and, in the original development environment, at `/root/ZombieBuddy-Audit.md`.
 
 ## Scope discipline
 

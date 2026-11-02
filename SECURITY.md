@@ -71,5 +71,5 @@ The 2026-11-02 audit’s High and Medium findings were fixed:
 | ZB-12 | Author-list duplicate-ID/key shadowing | Fixed |
 | ZB-16 | Trust badge used uploader ID | Fixed with ZB-05 |
 
-Low and Info findings remain tracked in the audit document. See `AGENTS.md` for the project’s
-security invariants.
+Low and Info findings remain tracked in [`doc/SecurityAudit.md`](doc/SecurityAudit.md). See
+`AGENTS.md` for the project’s security invariants.

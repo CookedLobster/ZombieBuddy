@@ -24,6 +24,17 @@ A 2.x mod that calls APIs that were removed (most commonly `Accessor`) fails at 
 
 If your mod must keep supporting 2.x installs too, ship two jars (see [Supporting both 2.x and 3.x](#supporting-both-2x-and-3x)).
 
+### Security default changes for users
+
+- `allow_unsigned_mods` now defaults to `false`. Unsigned Java mods are denied unless the user
+  explicitly sets `allow_unsigned_mods=true` (or uses `policy=allow-all`).
+- Preloaded Java mods are pinned to their approved JAR SHA-256 and require a valid `.zbs`
+  signature when ZBS checking is enabled. Replacing the JAR requires re-approval.
+- The experimental HTTP Lua API now requires a bearer token (see
+  [CommandLine.md](CommandLine.md#experimental-http-lua-api)).
+- Steam ban status is tri-state; unknown status forces an approval prompt and is displayed as
+  **Unknown**, not **No**.
+
 ## Breaking changes
 
 ### 1. `@Patch` moved to the `annotations` package

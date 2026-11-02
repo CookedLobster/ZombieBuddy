@@ -173,6 +173,25 @@ Trust does not mean "allow any file with this SteamID64 written in it". The sign
 
 ---
 
+## Key Rotation, Revocation, And Compromise
+
+There is no online revocation service. The trust root is the signed `authors.json` file and the
+keys it lists:
+
+- To **rotate** a key, add the new public key to your author entry, sign a short transition period
+  with both keys if needed, then remove the old key.
+- To **revoke** a compromised key, remove it from your `authors/` entry and regenerate + sign
+  `authors.json`. Old JARs signed with that key stop validating once the updated list is fetched.
+- If your private key is **compromised**, assume an attacker can sign arbitrary JARs as you until
+  the key is removed from the signed list. Remove the key immediately, publish a warning, and
+  rotate to a new key.
+- A user who has already marked your SteamID64 as trusted will auto-approve future valid
+  signatures from any currently listed key for that author. Removing the compromised key from
+  `authors.json` is therefore essential.
+
+Per-author files in `authors/` are the source of truth. Never hand-edit `authors.json`; run
+`rake authors:sign` so duplicate IDs and keys are rejected before the aggregate is signed.
+
 ## Failure Cases
 
 Common signature failure cases:
