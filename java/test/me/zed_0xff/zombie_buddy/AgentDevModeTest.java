@@ -44,4 +44,19 @@ class AgentDevModeTest {
         Agent.arguments.put("devtools", "false");
         assertFalse(Agent.isDevToolsEnabled());
     }
+
+    @Test
+    void experimentalFalseDisablesExperimentalFeatures() {
+        Agent.arguments.put("experimental", "false");
+        assertFalse(Agent.isExperimental());
+
+        Agent.arguments.put("experimental", "0");
+        assertFalse(Agent.isExperimental());
+
+        Agent.arguments.put("experimental", "no");
+        assertFalse(Agent.isExperimental());
+
+        Agent.arguments.put("experimental", "true");
+        assertTrue(Agent.isExperimental());
+    }
 }

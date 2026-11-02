@@ -145,6 +145,12 @@ class JavaModInfoJarCandidatesTest {
     }
 
     @Test
+    void rejectsWindowsDriveRelativeJarPath() throws Exception {
+        writeModInfo("javaJarFile=C:outside.jar\njavaPkgName=some.pkg\n");
+        assertNull(JavaModInfo.parse(tempDir));
+    }
+
+    @Test
     void rejectsAbsoluteJarPath() throws Exception {
         Path jar = tempDir.resolve("absolute.jar");
         Files.createFile(jar);

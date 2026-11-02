@@ -44,7 +44,9 @@ public class Patch_LuaManager {
             return;
         }
         Logger.warn("DEVELOPMENT MODE: running lua_init_script " + script);
-        LuaManager.RunLua(initScript.trim());
+        // Use the resolved real path, not the raw argument, so the file that
+        // was containment-checked is the file that gets executed.
+        LuaManager.RunLua(script.toString());
     }
 
     /**

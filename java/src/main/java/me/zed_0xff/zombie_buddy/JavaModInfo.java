@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -240,7 +241,9 @@ record JavaModInfo(
             if (Path.of(jarFilePath).isAbsolute()
                     || jarFilePath.startsWith("/")
                     || jarFilePath.startsWith("\\")
-                    || jarFilePath.matches("^[A-Za-z]:[\\\\/].*")) {
+                    // Reject both absolute and drive-relative Windows paths; a
+                    // drive-relative path can resolve outside the mod root.
+                    || jarFilePath.matches("^[A-Za-z]:.*")) {
                 Logger.error("Rejecting absolute javaJarFile path '" + jarFilePath + "' in " + infPath);
                 return null;
             }
@@ -292,7 +295,7 @@ record JavaModInfo(
                 if (line.isEmpty() || !line.contains("=")) {
                     continue;
                 }
-                String lowerLine = line.toLowerCase();
+                String lowerLine = line.toLowerCase(Locale.ROOT);
                 String value = trimmedValue(line);
                 Matcher m;
 

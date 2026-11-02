@@ -17,6 +17,12 @@ class ExposerDevToolsTest {
     @Exposer.LuaClass
     private static final class NormalApi {}
 
+    @Exposer.RequiresDevTools
+    private static final class DevOnlyOuter {
+        @Exposer.LuaClass
+        static final class NestedApi {}
+    }
+
     @BeforeEach
     @AfterEach
     void clearArguments() {
@@ -41,5 +47,12 @@ class ExposerDevToolsTest {
     void normalClassIsExposedWithoutDevtools() {
         Exposer.exposeClass(NormalApi.class);
         assertTrue(Exposer.isClassExposed(NormalApi.class));
+    }
+
+    @Test
+    void nestedClassInheritsDevOnlyRestriction() {
+        assertTrue(Exposer.requiresDevTools(DevOnlyOuter.NestedApi.class));
+        Exposer.exposeClass(DevOnlyOuter.NestedApi.class);
+        assertFalse(Exposer.isClassExposed(DevOnlyOuter.NestedApi.class));
     }
 }

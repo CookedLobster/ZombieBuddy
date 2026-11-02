@@ -880,7 +880,7 @@ final class ImguiApprovalDialog {
     }
 
     private boolean canTrustAuthor(JarBatchApprovalProtocol.Entry e) {
-        if (!e.zbs.valid() || e.steamBan != null || e.zbs.authorSteamId() == null) {
+        if (!e.zbs.valid() || !e.zbs.knownAuthorKey() || e.steamBan != null || e.zbs.authorSteamId() == null) {
             return false;
         }
         return !authorsWithBannedMods.contains(e.zbs.authorSteamId().toString());
@@ -904,6 +904,9 @@ final class ImguiApprovalDialog {
         }
         if (e.zbs.authorSteamId() == null) {
             return "Cannot trust author: signature has no author SteamID.";
+        }
+        if (!e.zbs.knownAuthorKey()) {
+            return "Cannot trust author: signing key is not in the signed authors list.";
         }
         return "";
     }

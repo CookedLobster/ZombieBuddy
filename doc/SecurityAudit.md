@@ -19,6 +19,11 @@ The project is a legitimate Java-agent modding framework. The issues below are s
 findings (ZB-06, ZB-07, ZB-08, ZB-09, ZB-10, ZB-11, ZB-13, ZB-14) were subsequently fixed in the
 same fork; Info items retain their original status unless explicitly noted below.
 
+**Re-scan update (2026-11-02):** a second pass found and fixed additional issues in the installer
+signature check, Steam ban parsing, trusted-author key provenance, `experimental=false`
+handling, `SelfUpdater`'s `META-INF` exemption, and CI action pinning. The remaining open items
+are ZB-17, ZB-18, ZB-20, and ZB-26. See the [re-scan addendum](#re-scan-addendum-2026-11-02).
+
 | ID | Severity | Issue | Status |
 |---|---|---|---|
 | ZB-01 | High | Unauthenticated experimental HTTP Lua API | **Fixed** |
@@ -35,12 +40,20 @@ same fork; Info items retain their original status unless explicitly noted below
 | ZB-12 | Medium (process) | Author-list duplicate-ID/key-shadowing risk | **Fixed** |
 | ZB-13 | Low | Installer modifies Steam config without backup | **Fixed** |
 | ZB-14 | Low | Approval response validation is incomplete | **Fixed** |
-| ZB-15 | Info | `http_client_timeout` is documented but not implemented | Open |
+| ZB-15 | Info | `http_client_timeout` is documented but not implemented | **Fixed** (re-scan) |
 | ZB-16 | Info | Trust badge uses uploader ID instead of signer ID | **Fixed** (with ZB-05) |
 | ZB-17 | Info | Historical build artifacts remain in Git | Open |
 | ZB-18 | Info | No CI/release provenance in repo; released binaries are out of scope | Open |
-| ZB-19 | Info | Intermediate `authors.json` commits were unsigned | Open |
+| ZB-19 | Info | Intermediate `authors.json` commits were unsigned | **Fixed** (CI check, re-scan) |
 | ZB-20 | Info | Experimental logging/debug features can expose sensitive data | Open |
+| ZB-21 | High | Installer accepted a copied signature block as a valid JAR signature | **Fixed** (re-scan) |
+| ZB-22 | Medium | Steam API error/missing ban fields treated as "not banned" | **Fixed** (re-scan) |
+| ZB-23 | Medium | Trusted-author auto-approval accepted Steam-profile keys / empty author keys | **Fixed** (re-scan) |
+| ZB-24 | Low | `experimental=false` still loaded the experimental JAR | **Fixed** (re-scan) |
+| ZB-25 | Medium | `SelfUpdater` exempted all `META-INF/` entries from signing | **Fixed** (re-scan) |
+| ZB-26 | Medium | Installer copies `zbNative.dll` without signature/hash verification | Open |
+| ZB-27 | Low | Installer verified the JAR before copying (TOCTOU) | **Fixed** (re-scan) |
+| ZB-28 | Low | CI workflows use mutable action tags rather than commit SHAs | **Fixed** (re-scan) |
 
 ---
 
@@ -195,6 +208,8 @@ public static byte[] readBodyLimited(HttpExchange exchange, int maxBytes) throws
   (fail closed).
 - Existing `config.json` entries written before this change have no hash; they are intentionally
   not loaded until the user re-approves them.
+- Preloads also honor a stored per-JAR denial: an explicit deny removes the preload and prevents
+  it from loading on the next start.
 
 ### Location
 
@@ -467,9 +482,12 @@ When `experimental` is enabled, any Lua mod can use `zbcall`/`zbset` to invoke p
   live JAR was moved aside, the `.bak` is restored.
 - Deferred Windows updates write `ZombieBuddy.jar.new` plus `ZombieBuddy.jar.new.sha256`.
   `zbNative` computes the `.new` SHA-256 with BCrypt and refuses to apply it unless the sidecar
-  matches. This is an integrity marker, not a signature; the next Java startup still re-verifies
-  the JAR signature before loading.
-- Tests cover unsigned JAR rejection and signer certificate mismatch.
+  matches. This is an integrity marker, not a signature. The running agent does not self-verify
+  its own JAR; a local attacker who can write the game directory can replace the live JAR (or both
+  the `.new` file and its sidecar) as well. The JAR signature is verified by the installer and by
+  the self-updater before an update is staged, not by the JVM at load time.
+- Tests cover unsigned JAR rejection, signer certificate mismatch, and unsigned nested
+  `META-INF` entries.
 
 ### Location
 
@@ -698,7 +716,10 @@ The parent validates only `modId` and `sha256` for each row. A local attacker wh
 ## ZB-15 — `http_client_timeout` is documented but not implemented
 
 **Severity:** Info / functional bug  
-**Status:** Open
+**Status:** **Fixed in re-scan** (2026-11-02)
+
+`SteamWorkshop` now reads the documented `http_client_timeout` key first and falls back to the old
+undocumented `http.client.timeout` key for existing launch configurations.
 
 ### Location
 
@@ -803,7 +824,12 @@ The repo does not contain a reproducible build/release pipeline, and the release
 ## ZB-19 — Intermediate `authors.json` commits were unsigned
 
 **Severity:** Info / process  
-**Status:** Open
+**Status:** **Fixed in re-scan** (2026-11-02)
+
+The CI workflow now runs `python3 lib/verify_authors.py authors.json` on every push and pull
+request. The script verifies the Ed25519 signature against the runtime public key in
+`KnownAuthors.java`, so an unsigned or hand-edited aggregate fails before merge.
+
 
 ### Location
 
@@ -825,7 +851,11 @@ Anyone inspecting or building from an intermediate commit may see an unsigned au
 ## ZB-20 — Experimental logging/debug features can expose sensitive data
 
 **Severity:** Info  
-**Status:** Open
+**Status:** Open (partially hardened)
+
+`JavaStateDumper` is now only initialized when `experimental=true` and `devtools=true`; packet/event
+logging remains off by default, and the HTTP `/log` endpoint is authenticated. The remaining
+features are still opt-in experimental data sources.
 
 ### Location
 
@@ -848,6 +878,107 @@ These features are disabled by default and mostly experimental, but enabling the
 - Ensure `/log` is authenticated and access-controlled.
 
 ---
+
+# Re-scan addendum (2026-11-02)
+
+A second pass over the fixed tree found the following additional issues. ZB-21 through ZB-25,
+ZB-27, and ZB-28 were fixed and are covered by new tests where applicable. ZB-26 remains open.
+
+## ZB-21 — Installer accepted a copied signature block as a valid JAR (High, fixed)
+
+`installer/installer.go` previously checked only that each `META-INF/*.RSA` block contained the
+pinned certificate. It did not verify the PKCS#7 signature, the `.SF` manifest digest, or the
+per-entry digests. An attacker could copy the legitimate signature block from a real JAR into a
+modified JAR (or change entries/manifest) and the installer would copy it into the game directory;
+the agent would then load it. The JAR signature was therefore not protecting the install path.
+
+The installer now performs full JAR verification (`installer/jarverify.go`):
+
+- parses and verifies the PKCS#7 signature over the `.SF` file;
+- requires the signer certificate to match the pinned fingerprint and be currently valid with
+  `digitalSignature` key usage;
+- verifies the manifest digest and every entry digest;
+- requires every non-signature entry to be covered by the signed manifest, including
+  `META-INF/services/**` and `META-INF/versions/**`;
+- rejects duplicate/unsafe entry names and multiple signers.
+
+The staged copy is verified again before it replaces the live file, closing the verify-to-copy
+window (ZB-27). Tests use a signed JAR fixture and reject tampered entries, unsigned service
+entries, and unsigned multi-release entries.
+
+## ZB-22 — Steam API errors were treated as “not banned” (Medium, fixed)
+
+`SteamWorkshop.fetchChunk` defaulted `banned` to `0` when the field was absent and never checked
+the `result` field. A missing/deleted/private item, a malformed response, or an error result could
+therefore become `NOT_BANNED`. This undermined the ZB-03 tri-state fix.
+
+`parseItemDetails` now returns `UNKNOWN` when `result` is missing or not `1`, or when `banned` is
+missing/invalid. Only `result=1` plus a numeric `banned` field produces `BANNED`/`NOT_BANNED`.
+Tests cover success, ban, missing result, non-1 result, and missing/invalid ban fields.
+
+## ZB-23 — Trusted-author auto-approval could use profile keys (Medium, fixed)
+
+`ZBSVerifier` falls back to `JavaModZBS:<key>` on the author's Steam profile when the author is not
+in `authors.json`. If the signed author list could not be loaded (network failure), or an author
+was present with no valid keys, a compromised Steam profile key could verify a JAR, and
+`Loader` would auto-approve it if that SteamID was in the trusted-author config. The signed author
+list was not actually authoritative for auto-trust.
+
+`CheckResult`/`ZBSignature` now record whether the verifying key came from the signed
+`authors.json` list (`knownAuthorKey`). Trusted-author auto-approval, the trust checkbox, and
+persisted author trust all require `knownAuthorKey=true`. An author present in `authors.json` with
+no valid keys is treated as unverifiable instead of falling back to the profile. Profile-key
+signatures still verify for manual per-JAR approval, but cannot be used for auto-approval.
+
+## ZB-24 — `experimental=false` enabled experimental features (Low, fixed)
+
+`Agent.isExperimental()` used `arguments.containsKey("experimental")`, so `experimental=false`,
+`experimental=0`, or `experimental=no` still loaded the experimental JAR. The flag parsing now
+treats an empty value/`true` as enabled and `false`/`0`/`no` as disabled, preserving the
+documented flag form.
+
+## ZB-25 — `SelfUpdater` exempted all `META-INF/` entries from signing (Medium, fixed)
+
+`verifyJarAndGetCerts` skipped the signer check for every entry whose name starts with
+`META-INF/`. That includes `META-INF/services/**` (service-provider injection) and
+`META-INF/versions/**` (multi-release class overrides), both of which can change loaded behaviour
+without modifying a signed class. Only top-level JAR signing metadata
+(`MANIFEST.MF`, `*.SF`, `*.RSA`, `*.DSA`, `*.EC`) is exempt now; nested `META-INF` resources must
+be signed by the pinned signer.
+
+## ZB-26 — Installer copies `zbNative.dll` without verification (Medium, open)
+
+The installer verifies `ZombieBuddy.jar` but copies `zbNative.dll` from Workshop content without a
+signature or pinned hash. An attacker who can replace the Workshop DLL (for example through a
+compromised upload) can keep the signed JAR and still get native code execution. The DLL is also
+loaded by `-agentlib:zbNative`, so the JAR signature does not cover it.
+
+The installer now verifies and copies `ZombieBuddy.jar` before touching `zbNative.dll`, so a
+rejected JAR cannot leave a newly copied DLL behind. The DLL itself is still unverified.
+
+Recommended fix: embed the DLL in the installer at release-build time, or Authenticode-sign it,
+or verify it against a release-pinned SHA-256/signature generated by the same release pipeline.
+Until then, treat `zbNative.dll` as trusted executable code from the same source as the JAR.
+
+## ZB-27 — Installer verify-to-copy window (Low, fixed)
+
+The installer verified the source JAR and then copied it in a separate step. A local writer could
+swap the source between the two operations. `copyFileVerified` now verifies the staged temporary
+file before renaming it into place, and the source is still verified first for a fast failure.
+
+## ZB-28 — Mutable CI action tags (Low, fixed)
+
+The CI workflow used `actions/checkout@v4`, `actions/setup-go@v5`, `actions/setup-java@v4`, and
+`gradle/actions/setup-gradle@v4`. These tags are mutable and were not pinned to commit SHAs.
+They are now pinned to full commit SHAs (with version comments); update them with
+Dependabot/Renovate.
+
+## ZB-15 / ZB-19 re-check
+
+- **ZB-15 fixed:** `SteamWorkshop` now reads `http_client_timeout` first and falls back to the old
+  undocumented `http.client.timeout` key.
+- **ZB-19 fixed:** `.github/workflows/ci.yml` runs `python3 lib/verify_authors.py authors.json`,
+  which verifies the Ed25519 signature against `KnownAuthors.AUTHORS_PUBKEY_HEX` before merge.
 
 # Recommended fix order
 
@@ -908,17 +1039,25 @@ Use this when re-cloning upstream:
 - [x] Add duplicate-ID/key checks to the author-list pipeline (ZB-12).
 - [x] Back up Steam config before installer changes (ZB-13).
 - [x] Validate all approval-response fields (ZB-14).
-- [ ] Fix `http_client_timeout` (ZB-15).
+- [x] Fix `http_client_timeout` (ZB-15).
 - [x] Use signer ID for trust badges (ZB-16).
 - [ ] Remove historical binaries and add release provenance (ZB-17/ZB-18).
-- [ ] Add a `authors.json` signature check to CI (ZB-19).
+- [x] Add an `authors.json` signature check to CI (ZB-19).
 - [ ] Add warnings/redaction for experimental logging (ZB-20).
+- [x] Full JAR signature/manifest verification in the installer (ZB-21).
+- [x] Fail closed on Steam API error/missing ban fields (ZB-22).
+- [x] Require signed-author-list keys for trusted-author auto-approval (ZB-23).
+- [x] Make `experimental=false` actually disable experimental code (ZB-24).
+- [x] Require signatures for nested `META-INF` resources in self-updates (ZB-25).
+- [ ] Verify or embed `zbNative.dll` in the installer (ZB-26).
+- [x] Verify the staged installer copy before replacing the live JAR (ZB-27).
+- [x] Pin CI actions to commit SHAs (ZB-28).
 
 ### Validation performed
 
 - `compileJava`, `compilePatchesJava`, and `compileExperimentalJava` — successful (Java 27).
-- `unitTest` — 209/209 passed (includes new dev-mode, `javaJarFile` containment,
-  approval-response sanitization, and self-updater tests).
+- `unitTest` — 220/220 passed (includes new dev-mode, `javaJarFile` containment,
+  approval-response sanitization, self-updater, Steam ban parsing, and ZBS key provenance tests).
 - `test_vanilla` — 27/27 passed.
 - `test_patched` — 33/48 passed, 7 failed, 8 skipped. The same 7 failures reproduce on a clean
   `7794d9f` worktree with Java 27 (patched-test harness class-loading / `NoClassDefFoundError`),
@@ -927,5 +1066,9 @@ Use this when re-cloning upstream:
 - Native launcher: `make` in `c/windows/` — successful with the MinGW cross-compiler.
 - Gradle dependency verification metadata generated and a subsequent `unitTest` run passed with
   verification enabled.
-- The installer JAR-signature check and `SelfUpdater.verifyTrustedSigner` were smoke-tested
-  against the historical signed JAR in Git history; both accepted the pinned certificate.
+- The installer JAR verifier (full PKCS#7, manifest, and entry-digest verification) and
+  `SelfUpdater.verifyTrustedSigner` were smoke-tested against the historical signed JAR in Git
+  history; both accepted the pinned certificate. Tampered entries, unsigned
+  `META-INF/services`/`META-INF/versions` entries, and wrong fingerprints are rejected.
+- The Go installer test suite includes a signed JAR fixture and tampering/negative cases.
+- `python3 lib/verify_authors.py authors.json` verifies the current aggregate signature.

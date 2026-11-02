@@ -5,6 +5,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -30,7 +31,7 @@ public class Agent {
             String[] args = agentArgs.split(",");
             for (String arg : args) {
                 String[] kv = arg.split("=", 2);
-                String key = kv[0].toLowerCase();
+                String key = kv[0].toLowerCase(Locale.ROOT);
                 String value = (kv.length > 1) ? kv[1] : "";
 
                 arguments.put(key, value);
@@ -164,7 +165,19 @@ public class Agent {
     }
 
     public static boolean isExperimental() {
-        return arguments.containsKey("experimental");
+        // Documented as a flag, so an empty value means enabled. Explicit
+        // false/0/no values disable it; the previous containsKey() check
+        // treated "experimental=false" as enabled.
+        return isEnabledFlag("experimental");
+    }
+
+    private static boolean isEnabledFlag(String key) {
+        String value = arguments.get(key);
+        if (value == null) {
+            return false;
+        }
+        String v = value.trim();
+        return !("false".equalsIgnoreCase(v) || "0".equals(v) || "no".equalsIgnoreCase(v));
     }
 
     /** Development-only launch arguments. Requires an explicit {@code dev=true}. */

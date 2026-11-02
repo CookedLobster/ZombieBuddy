@@ -1,13 +1,7 @@
 package main
 
 import (
-	"archive/zip"
 	"bufio"
-	"bytes"
-	"crypto/sha256"
-	"crypto/x509"
-	"encoding/asn1"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -760,35 +754,38 @@ func stringMapValue(m map[string]interface{}, key string) (string, bool) {
 }
 
 func copyCoreFiles(pzPath string, zbPath string) error {
-	files := []string{"zbNative.dll", "ZombieBuddy.jar"}
-
+	// Copy the JAR first and verify it before touching any other file. If a
+	// malicious source package contains a valid-looking DLL plus a rejected
+	// JAR, the DLL must not be left installed after the installer fails.
+	files := []string{"ZombieBuddy.jar", "zbNative.dll"}
+	sources := make(map[string]string, len(files))
 	for _, filename := range files {
-		var sources []string
 		if zbPath != "" {
-			sources = append(sources, filepath.Join(zbPath, "mods", "ZombieBuddy", "libs", filename))
-		}
-
-		var srcPath string
-		for _, s := range sources {
-			if _, err := os.Stat(s); err == nil {
-				srcPath = s
-				break
+			candidate := filepath.Join(zbPath, "mods", "ZombieBuddy", "libs", filename)
+			if _, err := os.Stat(candidate); err == nil {
+				sources[filename] = candidate
 			}
 		}
-
-		if srcPath == "" {
+		if sources[filename] == "" {
 			return fmt.Errorf("could not find %s source", filename)
 		}
+	}
 
+	// Verify the JAR before copying either file. The staged copy is verified
+	// again by copyFileVerified, so a source swap is also caught.
+	if err := verifyJarSignature(sources["ZombieBuddy.jar"]); err != nil {
+		return fmt.Errorf("refusing to install ZombieBuddy.jar: %w", err)
+	}
+
+	for _, filename := range files {
+		srcPath := sources[filename]
 		dstPath := filepath.Join(pzPath, filename)
+		var verify func(string) error
 		if filename == "ZombieBuddy.jar" {
-			if err := verifyJarSignature(srcPath); err != nil {
-				return fmt.Errorf("refusing to install %s: %w", filename, err)
-			}
+			verify = verifyJarSignature
 		}
 		fmt.Printf("[.] copying \"%s\" to \"%s\"\n", srcPath, dstPath)
-		err := copyFile(srcPath, dstPath)
-		if err != nil {
+		if err := copyFileVerified(srcPath, dstPath, verify); err != nil {
 			return fmt.Errorf("failed to copy %s: %v", filename, err)
 		}
 	}
@@ -826,7 +823,12 @@ func coreFileDeletionPlan(pzPath string) []string {
 }
 
 func coreFilesForRemoval() []string {
-	return []string{"zbNative.dll", "ZombieBuddy.jar", "ZombieBuddy.jar.new"}
+	return []string{
+		"zbNative.dll",
+		"ZombieBuddy.jar",
+		"ZombieBuddy.jar.new",
+		"ZombieBuddy.jar.new.sha256",
+	}
 }
 
 func patchJSONLauncher(pzPath string) (bool, error) {
@@ -1132,6 +1134,10 @@ func copyFileRaw(src, dst string) error {
 }
 
 func copyFile(src, dst string) error {
+	return copyFileVerified(src, dst, nil)
+}
+
+func copyFileVerified(src, dst string, verify func(string) error) error {
 	if _, err := backupFile(dst); err != nil {
 		return err
 	}
@@ -1167,6 +1173,11 @@ func copyFile(src, dst string) error {
 	if err := os.Chmod(tmpPath, info.Mode().Perm()); err != nil {
 		return err
 	}
+	if verify != nil {
+		if err := verify(tmpPath); err != nil {
+			return fmt.Errorf("staged file verification failed: %w", err)
+		}
+	}
 	return os.Rename(tmpPath, dst)
 }
 
@@ -1175,108 +1186,7 @@ func verifyJarSignature(path string) error {
 }
 
 func verifyJarSignatureWithFingerprint(path string, fingerprintHex string) error {
-	zr, err := zip.OpenReader(path)
-	if err != nil {
-		return fmt.Errorf("opening JAR: %w", err)
-	}
-	defer zr.Close()
-
-	var signatureFiles []*zip.File
-	for _, f := range zr.File {
-		name := strings.ToUpper(f.Name)
-		if strings.HasPrefix(name, "META-INF/") &&
-			(strings.HasSuffix(name, ".RSA") || strings.HasSuffix(name, ".DSA") || strings.HasSuffix(name, ".EC")) {
-			signatureFiles = append(signatureFiles, f)
-		}
-	}
-	if len(signatureFiles) == 0 {
-		return fmt.Errorf("JAR is not signed (no META-INF signature block)")
-	}
-
-	expected, err := hex.DecodeString(fingerprintHex)
-	if err != nil {
-		return fmt.Errorf("invalid pinned certificate fingerprint: %w", err)
-	}
-
-	for _, sf := range signatureFiles {
-		rc, err := sf.Open()
-		if err != nil {
-			return fmt.Errorf("reading %s: %w", sf.Name, err)
-		}
-		block, err := io.ReadAll(io.LimitReader(rc, 10<<20))
-		rc.Close()
-		if err != nil {
-			return fmt.Errorf("reading %s: %w", sf.Name, err)
-		}
-		certs, err := pkcs7Certificates(block)
-		if err != nil {
-			return fmt.Errorf("parsing %s: %w", sf.Name, err)
-		}
-		blockPinned := false
-		for _, cert := range certs {
-			sum := sha256.Sum256(cert.Raw)
-			if bytes.Equal(sum[:], expected) {
-				blockPinned = true
-				break
-			}
-		}
-		if !blockPinned {
-			return fmt.Errorf("signature block %s is not signed by the pinned ZombieBuddy certificate", sf.Name)
-		}
-	}
-	return nil
-}
-
-func pkcs7Certificates(der []byte) ([]*x509.Certificate, error) {
-	var info struct {
-		ContentType asn1.ObjectIdentifier
-		Content     asn1.RawValue
-	}
-	if rest, err := asn1.Unmarshal(der, &info); err != nil {
-		return nil, err
-	} else if len(rest) != 0 {
-		return nil, fmt.Errorf("trailing data in PKCS#7 block")
-	}
-	if info.ContentType.String() != "1.2.840.113549.1.7.2" {
-		return nil, fmt.Errorf("not PKCS#7 signedData")
-	}
-
-	var signedData struct {
-		Version          int
-		DigestAlgorithms asn1.RawValue
-		ContentInfo      asn1.RawValue
-		Certificates     asn1.RawValue `asn1:"optional,tag:0"`
-		CRLs             asn1.RawValue `asn1:"optional,tag:1"`
-		SignerInfos      asn1.RawValue
-	}
-	if _, err := asn1.Unmarshal(info.Content.Bytes, &signedData); err != nil {
-		return nil, err
-	}
-	if len(signedData.Certificates.Bytes) == 0 {
-		return nil, fmt.Errorf("no certificates in PKCS#7 block")
-	}
-
-	var certs []*x509.Certificate
-	remaining := signedData.Certificates.Bytes
-	for len(remaining) > 0 {
-		var raw asn1.RawValue
-		rest, err := asn1.Unmarshal(remaining, &raw)
-		if err != nil {
-			return nil, err
-		}
-		if raw.Tag == asn1.TagSequence {
-			cert, err := x509.ParseCertificate(raw.FullBytes)
-			if err != nil {
-				return nil, err
-			}
-			certs = append(certs, cert)
-		}
-		remaining = rest
-	}
-	if len(certs) == 0 {
-		return nil, fmt.Errorf("no parsable certificates in PKCS#7 block")
-	}
-	return certs, nil
+	return verifyJarSignatureAndManifest(path, fingerprintHex)
 }
 
 func updateLaunchOptions(steamPath string) error {

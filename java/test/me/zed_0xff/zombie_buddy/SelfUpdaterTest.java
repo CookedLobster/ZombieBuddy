@@ -29,6 +29,21 @@ class SelfUpdaterTest {
     }
 
     @Test
+    void onlyTopLevelSignatureMetadataIsExemptFromSigning() {
+        assertTrue(SelfUpdater.isSignatureMetadata("META-INF/MANIFEST.MF"));
+        assertTrue(SelfUpdater.isSignatureMetadata("META-INF/TEST.SF"));
+        assertTrue(SelfUpdater.isSignatureMetadata("META-INF/TEST.RSA"));
+        assertTrue(SelfUpdater.isSignatureMetadata("META-INF/TEST.DSA"));
+        assertTrue(SelfUpdater.isSignatureMetadata("META-INF/TEST.EC"));
+
+        assertFalse(SelfUpdater.isSignatureMetadata("META-INF/services/x.SF"));
+        assertFalse(SelfUpdater.isSignatureMetadata("META-INF/services/evil.Service"));
+        assertFalse(SelfUpdater.isSignatureMetadata("META-INF/versions/9/evil/Impl.class"));
+        assertFalse(SelfUpdater.isSignatureMetadata("META-INF/versions/9/x.RSA"));
+        assertFalse(SelfUpdater.isSignatureMetadata("com/example/Foo.class"));
+    }
+
+    @Test
     void signerCertificatesMustMatchExactly() throws Exception {
         Certificate a = mock(Certificate.class);
         Certificate b = mock(Certificate.class);

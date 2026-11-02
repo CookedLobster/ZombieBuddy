@@ -113,7 +113,11 @@ public final class ModApprovalsStore {
                     FileData loaded = ZBGson.PRETTY.fromJson(json, FileData.class);
                     if (loaded != null) {
                         data = loaded;
-                        if (data.mods == null) data.mods = new ArrayList<>();
+                        if (data.mods == null) {
+                            data.mods = new ArrayList<>();
+                        } else {
+                            data.mods.removeIf(Objects::isNull);
+                        }
                         Logger.info("Java mod approvals read from " + jp + ": " + data.mods.size() + " mod(s)");
                     }
                 }

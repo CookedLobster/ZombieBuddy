@@ -43,6 +43,27 @@ class ZBSVerifierTest {
         assertInstanceOf(ZBSVerifier.ValidSignature.class, result);
         assertEquals(AUTHOR_ID, result.sid);
         assertEquals(List.of(fixture.publicKeyHex), result.profileKeys);
+        assertTrue(((ZBSVerifier.ValidSignature) result).knownAuthorKey());
+    }
+
+    @Test
+    void verify_rejectsKnownAuthorWithNoValidKeysInsteadOfProfileFallback() throws Exception {
+        SignedFixture fixture = signedFixture(AUTHOR_ID);
+        KnownAuthors.AuthorEntry author = new KnownAuthors.AuthorEntry();
+        author.id = AUTHOR_ID;
+        author.name = "Test Author";
+        author.keys = List.of();
+
+        ZBSVerifier.Verification result = ZBSVerifier.verify(
+            fixture.jarPath,
+            fixture.zbsPath,
+            fixture.jarHash,
+            AUTHOR_ID,
+            Map.of(AUTHOR_ID, author)
+        );
+
+        assertInstanceOf(ZBSVerifier.VerificationError.class, result);
+        assertTrue(result.detailedMessage.contains("no valid signing key"));
     }
 
     @Test

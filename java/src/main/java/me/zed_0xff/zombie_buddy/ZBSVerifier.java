@@ -48,17 +48,18 @@ public final class ZBSVerifier {
         SteamID64 uploaderID,       // Workshop uploader ID or null
         String notice,              // UI notice text
         String blockReason,         // reason for blocking (if blocked)
-        Verification verification   // the raw verification result, or null
+        Verification verification,  // the raw verification result, or null
+        boolean knownAuthorKey      // signature used a key from the signed authors.json
     ) {
-        static final CheckResult DISABLED = new CheckResult(ModFlags.EMPTY, null, null, "", null, null);
+        static final CheckResult DISABLED = new CheckResult(ModFlags.EMPTY, null, null, "", null, null, false);
 
         static CheckResult unsignedAllowed(SteamID64 uploaderID) {
-            return new CheckResult(new ModFlags(MF_VALID), null, uploaderID, "", null, null);
+            return new CheckResult(new ModFlags(MF_VALID), null, uploaderID, "", null, null, false);
         }
 
         static CheckResult missingNotAllowed(SteamID64 uploaderID) {
             return new CheckResult(ModFlags.EMPTY, null, uploaderID, "Missing .zbs file (allow_unsigned_mods=false)",
-                "missing .zbs file; allow_unsigned_mods=false", null);
+                "missing .zbs file; allow_unsigned_mods=false", null, false);
         }
     }
 
@@ -107,9 +108,12 @@ public final class ZBSVerifier {
             ", detailedMessage=" + (zbs.detailedMessage != null ? zbs.detailedMessage.trim() : "null"));
 
         if (valid) {
-            return new CheckResult(new ModFlags(MF_VALID | MF_SIGNED), zbs.sid, uploaderID, notice, null, zbs);
+            boolean knownAuthorKey = zbs instanceof ValidSignature validSignature && validSignature.knownAuthorKey();
+            return new CheckResult(new ModFlags(MF_VALID | MF_SIGNED), zbs.sid, uploaderID, notice, null, zbs,
+                knownAuthorKey);
         } else {
-            return new CheckResult(new ModFlags(MF_SIGNED), zbs.sid, uploaderID, notice, "invalid ZBS: " + zbs.detailedMessage, zbs);
+            return new CheckResult(new ModFlags(MF_SIGNED), zbs.sid, uploaderID, notice,
+                "invalid ZBS: " + zbs.detailedMessage, zbs, false);
         }
     }
 
@@ -171,8 +175,19 @@ public final class ZBSVerifier {
             }
         }
         List<String> pubHexes = knownJavaModZBSHexes(sid, knownAuthors);
+        boolean knownAuthorKey = !pubHexes.isEmpty();
         String keySource = "known authors list";
         if (pubHexes.isEmpty()) {
+            // An author present in the signed list with no valid keys must not
+            // silently fall back to a Steam-profile key: that would let a
+            // compromised profile key override the signed author list.
+            if (knownAuthors != null && knownAuthors.containsKey(sid)) {
+                return new VerificationError(
+                    sid,
+                    "Author is listed in authors.json but has no valid signing key.",
+                    pubHexes
+                );
+            }
             keySource = "Steam profile";
             try {
                 pubHexes = fetchJavaModZBSHexesFromSteam(sid);
@@ -207,7 +222,7 @@ public final class ZBSVerifier {
                 signer.update(msg, 0, msg.length);
                 boolean ok = signer.verifySignature(sig);
                 if (ok) {
-                    return new ValidSignature(sid, pubHexes);
+                    return new ValidSignature(sid, pubHexes, knownAuthorKey);
                 }
             }
             return new InvalidSignature(sid, "Invalid signature — JAR may have been tampered with.", pubHexes);
@@ -335,12 +350,24 @@ public final class ZBSVerifier {
 
     /** Signature is valid for this JAR hash and Steam author key. */
     public static final class ValidSignature extends Verification {
+        private final boolean knownAuthorKey;
+
         public ValidSignature(SteamID64 sid) {
-            super(sid, "", "");
+            this(sid, Collections.emptyList(), false);
         }
 
         public ValidSignature(SteamID64 sid, List<String> profileKeys) {
+            this(sid, profileKeys, false);
+        }
+
+        public ValidSignature(SteamID64 sid, List<String> profileKeys, boolean knownAuthorKey) {
             super(sid, "", "", profileKeys);
+            this.knownAuthorKey = knownAuthorKey;
+        }
+
+        /** True when the verifying key came from the signed authors.json list. */
+        public boolean knownAuthorKey() {
+            return knownAuthorKey;
         }
     }
 

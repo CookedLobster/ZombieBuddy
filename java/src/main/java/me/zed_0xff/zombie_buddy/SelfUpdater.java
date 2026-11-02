@@ -253,6 +253,33 @@ public final class SelfUpdater {
         }
     }
 
+    /**
+     * Only JAR signing metadata may be unsigned. In particular, META-INF/services and
+     * META-INF/versions entries are executable/behavioural content and must be signed;
+     * exempting all of META-INF would let an attacker add unsigned service providers or
+     * multi-release classes to an otherwise valid JAR.
+     */
+    static boolean isSignatureMetadata(String name) {
+        if (name == null) {
+            return false;
+        }
+        if ("META-INF/MANIFEST.MF".equals(name)) {
+            return true;
+        }
+        if (!name.startsWith("META-INF/")) {
+            return false;
+        }
+        // Signature files live directly in META-INF/; do not exempt nested
+        // resources such as META-INF/services/x.SF or META-INF/versions/....
+        if (name.indexOf('/', "META-INF/".length()) >= 0) {
+            return false;
+        }
+        return name.regionMatches(true, name.length() - 3, ".SF", 0, 3)
+            || name.regionMatches(true, name.length() - 4, ".RSA", 0, 4)
+            || name.regionMatches(true, name.length() - 4, ".DSA", 0, 4)
+            || name.regionMatches(true, name.length() - 3, ".EC", 0, 3);
+    }
+
     public static Certificate[] verifyJarAndGetCerts(Path jarPath) throws Exception {
         Manifest mf = getJarManifest(jarPath);
         if (mf == null) {
@@ -272,13 +299,13 @@ public final class SelfUpdater {
                 }
 
                 String name = e.getName();
-                boolean isMeta = name.startsWith("META-INF/");
+                boolean signatureMetadata = isSignatureMetadata(name);
                 Certificate[] certs = e.getCertificates();
                 if (certs == null || certs.length == 0) {
-                    if (!isMeta) {
+                    if (!signatureMetadata) {
                         throw new SecurityException("Unsigned entry: " + name);
                     }
-                } else if (!isMeta) {
+                } else if (!signatureMetadata) {
                     if (signer == null) {
                         signer = certs;
                     } else if (!sameSignerCertificate(signer, certs)) {

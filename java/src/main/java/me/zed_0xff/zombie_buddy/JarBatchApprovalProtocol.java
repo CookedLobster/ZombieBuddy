@@ -97,14 +97,20 @@ public final class JarBatchApprovalProtocol {
         public record ZBSignature(
             boolean valid,
             SteamID64 authorSteamId,
-            String notice
+            String notice,
+            boolean knownAuthorKey
         ) {
             public ZBSignature {
                 notice = notice != null ? notice : "";
             }
 
+            /** Backward-compatible constructor for callers/fixtures without key-source data. */
+            public ZBSignature(boolean valid, SteamID64 authorSteamId, String notice) {
+                this(valid, authorSteamId, notice, false);
+            }
+
             public static ZBSignature none() {
-                return new ZBSignature(false, null, "");
+                return new ZBSignature(false, null, "", false);
             }
 
             public boolean invalid() {
@@ -196,6 +202,7 @@ public final class JarBatchApprovalProtocol {
                 flags |= MF_PERSIST;
             }
             boolean canTrust = expectedZbs.valid()
+                && expectedZbs.knownAuthorKey()
                 && expectedZbs.authorSteamId() != null
                 && (expected.steamBan == null || (!expected.steamBan.isBanned() && !expected.steamBan.isUnknown()));
             if (actualFlags.has(MF_TRUST_AUTHOR) && canTrust) {

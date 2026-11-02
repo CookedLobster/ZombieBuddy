@@ -102,7 +102,7 @@ public class Exposer {
         if (cls == null) {
             return;
         }
-        if (cls.isAnnotationPresent(RequiresDevTools.class) && !Agent.isDevToolsEnabled()) {
+        if (requiresDevTools(cls) && !Agent.isDevToolsEnabled()) {
             Logger.warn("Not exposing development-only Lua API " + cls.getName()
                 + ": requires experimental=true and devtools=true");
             return;
@@ -194,6 +194,16 @@ public class Exposer {
 
     public static boolean isClassExposed(Class<?> cls) {
         return g_exposed_classes.containsKey(cls);
+    }
+
+    /** True when the class, or any enclosing class, is marked development-only. */
+    static boolean requiresDevTools(Class<?> cls) {
+        for (Class<?> current = cls; current != null; current = current.getEnclosingClass()) {
+            if (current.isAnnotationPresent(RequiresDevTools.class)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static void afterExposeAll() {
@@ -372,7 +382,7 @@ public class Exposer {
                 return;
             }
 
-            if (cls.isAnnotationPresent(RequiresDevTools.class) && !Agent.isDevToolsEnabled()) {
+            if (requiresDevTools(cls) && !Agent.isDevToolsEnabled()) {
                 Logger.warn("Not exposing development-only Lua API " + cls.getName()
                     + ": requires experimental=true and devtools=true");
                 return;

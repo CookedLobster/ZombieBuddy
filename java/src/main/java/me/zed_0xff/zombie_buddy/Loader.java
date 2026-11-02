@@ -240,8 +240,11 @@ public class Loader {
 
     private static JarDecisionTable buildJarDecisionTable(List<ModApprovalsStore.ModEntry> mods) {
         JarDecisionTable table = new JarDecisionTable();
+        if (mods == null) {
+            return table;
+        }
         for (ModApprovalsStore.ModEntry entry : mods) {
-            if (entry.jarHash != null) {
+            if (entry != null && entry.jarHash != null) {
                 table.put(entry.jarHash, entry.decision);
             }
         }
@@ -351,7 +354,8 @@ public class Loader {
                 storeDecision(entry.sha256, allow, entry.modId, entry.workshopItemId,
                     entry.zbs.valid() ? entry.zbs.authorSteamId() : null);
             }
-            if (entry.flags.has(MF_PERSIST) && entry.zbs.valid() && entry.zbs.authorSteamId() != null) {
+            if (entry.flags.has(MF_PERSIST) && entry.zbs.valid() && entry.zbs.knownAuthorKey()
+                    && entry.zbs.authorSteamId() != null) {
                 if (entry.flags.has(MF_TRUST_AUTHOR)) {
                     storeTrustedAuthor(entry.zbs.authorSteamId());
                 } else if (isAuthorTrusted(entry.zbs.authorSteamId())) {
@@ -521,9 +525,17 @@ public class Loader {
         }
 
         ZBSContext zbsCtx = loadZBSContext(entries.stream().map(entry -> entry.workshopItemId()).toList());
+        // A stored denial is an explicit user decision and must win over a
+        // preload record, just as it does for normal mod loading.
+        JarDecisionTable storedDecisions = buildJarDecisionTable(ModApprovalsStore.load().mods);
 
         // Second pass: ban/ZBS checks and load
         for (PreloadEntry entry : entries) {
+            if (Boolean.FALSE.equals(storedDecisions.get(entry.hash()))) {
+                Logger.warn("Preload pkg '" + entry.javaPkgName() + "': JAR has a stored denial; removing preload entry.");
+                PreloadMods.remove(entry.id());
+                continue;
+            }
             SteamWorkshop.ItemDetails details = entry.workshopItemId() != null
                 ? zbsCtx.workshopDetailsById().get(entry.workshopItemId())
                 : null;
@@ -947,7 +959,8 @@ public class Loader {
                 JarBatchApprovalProtocol.Entry.ZBSignature zbs = new JarBatchApprovalProtocol.Entry.ZBSignature(
                     flags.hasAll(MF_SIGNED, MF_VALID),
                     authorID,
-                    flags.hasAll(MF_SIGNED, MF_VALID) ? authorDisplayName(authorID, knownAuthorsBySteamId) : ctx.zbsResult.notice()
+                    flags.hasAll(MF_SIGNED, MF_VALID) ? authorDisplayName(authorID, knownAuthorsBySteamId) : ctx.zbsResult.notice(),
+                    ctx.zbsResult.knownAuthorKey()
                 );
                 Boolean decision = lookupJarDecision(approvals, ctx.hash);
                 if (decision == null) {
@@ -959,7 +972,7 @@ public class Loader {
                 // must not auto-approve: force a prompt so the user sees it.
                 if (!g_forceApprovalDialog && !ctx.steamBanned && !ctx.steamBanUnknown
                         && !Boolean.FALSE.equals(decision)
-                        && zbs.valid() && isAuthorTrusted(authorID)) {
+                        && zbs.valid() && zbs.knownAuthorKey() && isAuthorTrusted(authorID)) {
                     // Auto-approve for this session only — trusted-author approvals are not persisted
                     // because the trust comes from the author record, not the specific JAR hash.
                     approvals.put(ctx.hash, Boolean.TRUE);
@@ -972,7 +985,7 @@ public class Loader {
                     if (decision != null) continue;
                 }
                 ModFlags entryFlags = new ModFlags(isDecisionStored(ctx.hash, decision) ? MF_PERSIST : MF_NONE);
-                if (zbs.valid() && authorID != null && isAuthorTrusted(authorID)
+                if (zbs.valid() && zbs.knownAuthorKey() && authorID != null && isAuthorTrusted(authorID)
                         && !ctx.steamBanned && !ctx.steamBanUnknown) {
                     entryFlags = entryFlags.with(MF_TRUST_AUTHOR);
                 }
@@ -1047,7 +1060,8 @@ public class Loader {
                 skipReason = " (" + ctx.zbsResult.blockReason() + ", modId=" + ctx.modId + ")";
             }
 
-            if (flags.hasAll(MF_VALID, MF_SIGNED) && !ctx.steamBanned && !ctx.steamBanUnknown
+            if (flags.hasAll(MF_VALID, MF_SIGNED) && ctx.zbsResult.knownAuthorKey()
+                    && !ctx.steamBanned && !ctx.steamBanUnknown
                     && isAuthorTrusted(ctx.zbsResult.sid())) {
                 flags = flags.with(MF_TRUST_AUTHOR);
             }

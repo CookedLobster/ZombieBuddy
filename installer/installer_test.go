@@ -3,20 +3,13 @@ package main
 import (
 	"archive/zip"
 	"bufio"
-	"crypto/ed25519"
-	"crypto/rand"
-	"crypto/sha256"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/asn1"
-	"encoding/hex"
 	"fmt"
-	"math/big"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestFindAppInLibraries(t *testing.T) {
@@ -565,70 +558,12 @@ func TestDetectZBCopiesAndPrompt(t *testing.T) {
 	}
 }
 
-func derWrap(tag byte, content []byte) []byte {
-	length := len(content)
-	switch {
-	case length < 128:
-		return append([]byte{tag, byte(length)}, content...)
-	case length < 256:
-		return append([]byte{tag, 0x81, byte(length)}, content...)
-	default:
-		return append([]byte{tag, 0x82, byte(length >> 8), byte(length)}, content...)
-	}
-}
+// signedTestJarFingerprint is the SHA-256 of the test signer certificate in
+// testdata/signed-test.jar. The fixture is only a test key; it is not a
+// ZombieBuddy release key.
+const signedTestJarFingerprint = "02ba97fc864f94ba656444ecbb3687b4f65bb5f43689314392f8766901d38580"
 
-func makePKCS7WithCert(t *testing.T, cert *x509.Certificate) []byte {
-	t.Helper()
-	signedData := struct {
-		Version          int
-		DigestAlgorithms asn1.RawValue
-		ContentInfo      asn1.RawValue
-		Certificates     asn1.RawValue `asn1:"optional,tag:0"`
-		CRLs             asn1.RawValue `asn1:"optional,tag:1"`
-		SignerInfos      asn1.RawValue
-	}{
-		Version:          1,
-		DigestAlgorithms: asn1.RawValue{FullBytes: []byte{0x31, 0x00}},
-		ContentInfo:      asn1.RawValue{FullBytes: []byte{0x30, 0x00}},
-		Certificates:     asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: cert.Raw},
-		SignerInfos:      asn1.RawValue{FullBytes: []byte{0x31, 0x00}},
-	}
-	signedBytes, err := asn1.Marshal(signedData)
-	if err != nil {
-		t.Fatal(err)
-	}
-	oid, err := asn1.Marshal(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 7, 2})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return derWrap(0x30, append(oid, derWrap(0xa0, signedBytes)...))
-}
-
-func makeTestCert(t *testing.T) *x509.Certificate {
-	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "ZombieBuddy test signer"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cert, err := x509.ParseCertificate(der)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return cert
-}
-
-func makeJar(t *testing.T, signatureBlock []byte) string {
+func makeJar(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "test.jar")
 	f, err := os.Create(path)
@@ -636,15 +571,6 @@ func makeJar(t *testing.T, signatureBlock []byte) string {
 		t.Fatal(err)
 	}
 	zw := zip.NewWriter(f)
-	if signatureBlock != nil {
-		w, err := zw.Create("META-INF/TEST.RSA")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := w.Write(signatureBlock); err != nil {
-			t.Fatal(err)
-		}
-	}
 	w, err := zw.Create("Test.class")
 	if err != nil {
 		t.Fatal(err)
@@ -662,21 +588,154 @@ func makeJar(t *testing.T, signatureBlock []byte) string {
 }
 
 func TestVerifyJarSignatureRejectsUnsigned(t *testing.T) {
-	jar := makeJar(t, nil)
+	jar := makeJar(t)
 	if err := verifyJarSignature(jar); err == nil {
 		t.Fatal("expected unsigned JAR to be rejected")
 	}
 }
 
 func TestVerifyJarSignatureAcceptsPinnedCertificate(t *testing.T) {
-	cert := makeTestCert(t)
-	jar := makeJar(t, makePKCS7WithCert(t, cert))
-	sum := sha256.Sum256(cert.Raw)
-	if err := verifyJarSignatureWithFingerprint(jar, hex.EncodeToString(sum[:])); err != nil {
+	jar := filepath.Join("testdata", "signed-test.jar")
+	if err := verifyJarSignatureWithFingerprint(jar, signedTestJarFingerprint); err != nil {
 		t.Fatalf("expected signed JAR to be accepted: %v", err)
 	}
 	if err := verifyJarSignatureWithFingerprint(jar, ZB_JAR_CERT_SHA256); err == nil {
 		t.Fatal("expected a non-matching fingerprint to be rejected")
+	}
+}
+
+func TestVerifyJarSignatureRejectsTamperedEntry(t *testing.T) {
+	jar := rewriteJar(t, filepath.Join("testdata", "signed-test.jar"),
+		map[string][]byte{"readme.txt": []byte("tampered\n")}, nil)
+	if err := verifyJarSignatureWithFingerprint(jar, signedTestJarFingerprint); err == nil {
+		t.Fatal("expected a modified signed JAR to be rejected")
+	}
+}
+
+func TestVerifyJarSignatureRejectsUnsignedServiceEntry(t *testing.T) {
+	jar := rewriteJar(t, filepath.Join("testdata", "signed-test.jar"), nil,
+		map[string][]byte{"META-INF/services/evil.Service": []byte("evil.Impl\n")})
+	if err := verifyJarSignatureWithFingerprint(jar, signedTestJarFingerprint); err == nil {
+		t.Fatal("expected an unsigned META-INF/services entry to be rejected")
+	}
+}
+
+func TestVerifyJarSignatureRejectsUnsignedVersionedEntry(t *testing.T) {
+	jar := rewriteJar(t, filepath.Join("testdata", "signed-test.jar"), nil,
+		map[string][]byte{"META-INF/versions/9/evil/Impl.class": {0xca, 0xfe, 0xba, 0xbe}})
+	if err := verifyJarSignatureWithFingerprint(jar, signedTestJarFingerprint); err == nil {
+		t.Fatal("expected an unsigned META-INF/versions entry to be rejected")
+	}
+}
+
+// rewriteJar copies a JAR, replacing entries in changes and adding entries in
+// additions. It is used to model modifications that must invalidate the JAR
+// signature.
+func rewriteJar(t *testing.T, src string, changes, additions map[string][]byte) string {
+	t.Helper()
+	zr, err := zip.OpenReader(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+
+	dst := filepath.Join(t.TempDir(), "rewritten.jar")
+	out, err := os.Create(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(out)
+
+	for _, f := range zr.File {
+		if _, replaced := changes[f.Name]; replaced {
+			continue
+		}
+		if _, added := additions[f.Name]; added {
+			t.Fatalf("addition duplicates existing entry %q", f.Name)
+		}
+		w, err := zw.Create(f.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.Copy(w, rc); err != nil {
+			rc.Close()
+			t.Fatal(err)
+		}
+		rc.Close()
+	}
+
+	names := make([]string, 0, len(changes)+len(additions))
+	for name := range changes {
+		names = append(names, name)
+	}
+	for name := range additions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		data, ok := changes[name]
+		if !ok {
+			data = additions[name]
+		}
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := out.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return dst
+}
+
+func TestCopyCoreFilesDoesNotInstallDllWhenJarRejected(t *testing.T) {
+	root := t.TempDir()
+	pzPath := filepath.Join(root, "game")
+	zbPath := filepath.Join(root, "workshop")
+	libsPath := filepath.Join(zbPath, "mods", "ZombieBuddy", "libs")
+	if err := os.MkdirAll(pzPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(libsPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	jar, err := os.ReadFile(filepath.Join("testdata", "signed-test.jar"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fixture is signed by a test key, not the pinned production key, so
+	// copyCoreFiles must reject it before copying the DLL.
+	if err := os.WriteFile(filepath.Join(libsPath, "ZombieBuddy.jar"), jar, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(libsPath, "zbNative.dll"), []byte("new dll"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	existing := filepath.Join(pzPath, "zbNative.dll")
+	if err := os.WriteFile(existing, []byte("old dll"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyCoreFiles(pzPath, zbPath); err == nil {
+		t.Fatal("expected the test-signed JAR to be rejected")
+	}
+	got, err := os.ReadFile(existing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "old dll" {
+		t.Fatalf("DLL was replaced despite a rejected JAR: %q", got)
 	}
 }
 

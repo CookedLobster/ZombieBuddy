@@ -362,7 +362,8 @@ public final class SwingApprovalMain {
             c.fill = GridBagConstraints.BOTH;
             grid.add(radios, c);
 
-            boolean canTrustThisAuthor = showTrustColumn && zbsYes && e.steamBan == null
+            boolean canTrustThisAuthor = showTrustColumn && zbsYes && e.zbs.knownAuthorKey()
+                && e.steamBan == null
                 && (zbsSteamId.isEmpty() || !authorsWithBannedMods.contains(zbsSteamId));
             JCheckBox trustCb = new JCheckBox("", canTrustThisAuthor && e.flags.has(MF_TRUST_AUTHOR));
             trustCb.setEnabled(canTrustThisAuthor);
@@ -373,6 +374,8 @@ public final class SwingApprovalMain {
             } else if (!canTrustThisAuthor && showTrustColumn && zbsYes && !zbsSteamId.isEmpty()
                     && authorsWithBannedMods.contains(zbsSteamId)) {
                 trustCb.setToolTipText("Cannot trust author: they have a banned mod in this batch.");
+            } else if (!canTrustThisAuthor && showTrustColumn && zbsYes && !e.zbs.knownAuthorKey()) {
+                trustCb.setToolTipText("Cannot trust author: signing key is not in the signed authors list.");
             }
             applyRowBackground(trustCb, rowBg);
             trustChecks[i] = trustCb;
@@ -553,7 +556,8 @@ public final class SwingApprovalMain {
     private static boolean shouldShowTrustColumn(
             List<JarBatchApprovalProtocol.Entry> entries, Set<String> authorsWithBannedMods) {
         for (JarBatchApprovalProtocol.Entry e : entries) {
-            if (e.zbs.valid() && e.steamBan == null && e.zbs.authorSteamId() != null
+            if (e.zbs.valid() && e.zbs.knownAuthorKey() && e.steamBan == null
+                    && e.zbs.authorSteamId() != null
                     && !authorsWithBannedMods.contains(e.zbs.authorSteamId().toString())) {
                 return true;
             }

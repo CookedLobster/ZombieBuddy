@@ -10,11 +10,12 @@ import me.zed_0xff.zombie_buddy.*;
 
 public class PreMain {
     public static void premain(String[] args) {
-        JavaStateDumper.init();
-        if (Agent.isDevToolsEnabled()) {
+        boolean devToolsEnabled = Agent.isDevToolsEnabled();
+        if (devToolsEnabled) {
+            JavaStateDumper.init();
             WatchesAPI.init();
         } else {
-            Logger.info("Watches API disabled: requires experimental=true and devtools=true.");
+            Logger.info("Java state dumper and Watches API disabled: require experimental=true and devtools=true.");
         }
 
         // Configure HTTP server host, port and timeout from Agent.arguments (if provided)
@@ -143,7 +144,7 @@ public class PreMain {
             }
             Logger.info("Wrote HTTP API token to " + tokenFile.toAbsolutePath());
             return true;
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) {
             Logger.error("Failed to write HTTP API token file: " + e.getMessage());
             Logger.printStackTrace(e);
             return false;
@@ -152,10 +153,15 @@ public class PreMain {
 
     private static void writePortFile(int port) {
         try {
-            Path portFile = Path.of(Utils.getCacheDir(), "zbLuaAPI.txt");
+            String cacheDir = Utils.getCacheDir();
+            if (Utils.isBlank(cacheDir)) {
+                Logger.error("Cannot locate the game cache directory for zbLuaAPI.txt");
+                return;
+            }
+            Path portFile = Path.of(cacheDir, "zbLuaAPI.txt");
             Files.writeString(portFile, String.valueOf(port));
             Logger.info("Wrote random API port " + port + " to " + portFile.toAbsolutePath());
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) {
             Logger.error("Failed to write port file: " + e.getMessage());
             Logger.printStackTrace(e);
         }

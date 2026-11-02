@@ -149,6 +149,7 @@ public class zbUtils {
 
     // toString:  "private java.lang.String zombie.core.Core.upgradeOptionValue(java.lang.String,java.lang.String,int)"
     // MethodSig: {"String", "upgradeOptionValue", "String, String, int"}
+    @Exposer.RequiresDevTools
     @Exposer.LuaClass
     public static class MethodSig implements Comparable<MethodSig> {
         private final Method m_method;

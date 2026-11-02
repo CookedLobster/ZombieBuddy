@@ -42,7 +42,11 @@ Signing also proves key identity:
 Signing can support author trust:
 
 - A user can approve one signed mod and choose to trust that author.
-- Later JARs signed by the same trusted author key can be allowed without asking again.
+- Later JARs signed by a key for that author in the signed `authors.json` list can be allowed
+  without asking again.
+- A signature verified only from a key published on the author's Steam profile is still a valid
+  identity check, but it cannot be used for trusted-author auto-approval. This keeps a
+  compromised Steam profile from overriding the signed author list.
 
 ---
 
@@ -99,7 +103,11 @@ ZombieBuddy can load a known authors list from `authors.json`. Entries look like
 
 This list gives ZombieBuddy a stable mapping from SteamID64 to display name and public signing keys. ZombieBuddy syncs `authors.json` from GitHub and caches it in the ZombieBuddy config directory, so new author entries can be added without publishing a ZombieBuddy mod update, and verification can still work when the remote list is temporarily unavailable.
 
-When an author has keys in `authors.json`, those keys are authoritative. ZombieBuddy tries them before falling back to reading `JavaModZBS:<key>` from the author's Steam profile.
+When an author has keys in `authors.json`, those keys are authoritative. ZombieBuddy tries them
+before falling back to reading `JavaModZBS:<key>` from the author's Steam profile. An author listed
+with no valid keys is treated as unverifiable rather than falling back to the profile. Trusted-author
+auto-approval only applies when the signature verified with a key from the signed `authors.json`
+list; profile-key signatures always require a per-JAR decision.
 
 Authors who want to keep their Steam profile private can submit a pull request to add their SteamID64, display name, and public key instead of publishing `JavaModZBS:<key>` on their profile. Do this by adding a new file to `authors/` (named after the author, e.g. `authors/author-name.json`), not by editing `authors.json` directly — that file is regenerated from `authors/` and any direct edits to it will be overwritten.
 

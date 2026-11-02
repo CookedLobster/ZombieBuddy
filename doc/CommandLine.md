@@ -174,7 +174,8 @@ This is equivalent to:
 
 ### experimental
 
-Enables experimental patches, including the HTTP Lua API. This is a flag parameter (no value needed).
+Enables experimental patches, including the HTTP Lua API. This is a flag parameter: an empty
+value or `true` enables it, while `false`, `0`, or `no` explicitly disables it. Default: off.
 
 **Example:**
 
@@ -202,8 +203,9 @@ Enables development-only launch arguments: `patches_jar`, `expose_classes`, and
 ### devtools
 
 Enables the experimental reflection/debug Lua helpers (`zbinspect`, `zbmethods`, `zbfields`,
-`zbget`, `zbset`, `zbcall`, `zbmap`, `zbgrep`, `zbgreplog`) and the `ZombieBuddy.Watches` API.
-Requires `experimental=true` in addition to `devtools=true`. Default: `false`.
+`zbget`, `zbset`, `zbcall`, `zbmap`, `zbgrep`, `zbgreplog`), the `ZombieBuddy.Watches` API, and
+the Ctrl+T/SIGINFO thread dumper. Requires `experimental=true` in addition to `devtools=true`.
+Default: `false`.
 
 **Example:**
 

@@ -90,8 +90,10 @@ These are release-blocking. Do not weaken them without an explicit instruction f
 2. **Approval policy**
    - New/changed JARs must be hash-pinned before execution.
    - A stored denial always wins over trusted-author auto-approval.
+   - Trusted-author auto-approval must use a key from the signed `authors.json` list. Steam-profile
+     keys may verify a mod for manual approval but must never auto-approve it.
    - Unknown Steam ban status must never auto-approve. It may prompt, but must not look like
-     “not banned”.
+     “not banned”. Missing/error Steam API fields are unknown, not “not banned”.
 3. **Preloads**
    - Preload records must include the approved SHA-256.
    - Verify the hash and Workshop ban status before every preload.
@@ -100,6 +102,11 @@ These are release-blocking. Do not weaken them without an explicit instruction f
    - Do not add trust bypasses, “temporary” unsigned paths, or debug flags that skip approval.
    - Author-list changes must go through `authors:sign`; never commit a hand-edited aggregate.
    - Reject duplicate author IDs and duplicate signing keys.
+   - The installer must verify the full JAR signature, manifest, and entry digests (not just the
+     presence of a certificate in a signature block), and must verify the staged copy before
+     replacing the live JAR.
+   - Only top-level JAR signing metadata may be unsigned in an update; `META-INF/services/**` and
+     `META-INF/versions/**` must be signed.
 5. **Fail closed**
    - Missing UI, missing signature, unknown ban status, unreadable token, or failed persistence
      must deny or defer, not auto-approve.

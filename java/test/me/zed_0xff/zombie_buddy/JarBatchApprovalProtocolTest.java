@@ -311,9 +311,9 @@ class JarBatchApprovalProtocolTest {
     }
 
     @Test
-    void sanitizeResponseKeepsTrustForValidAuthor() {
+    void sanitizeResponseKeepsTrustForValidKnownAuthorKey() {
         JarBatchApprovalProtocol.Entry.ZBSignature valid =
-            new JarBatchApprovalProtocol.Entry.ZBSignature(true, new SteamID64(76561198000000000L), "");
+            new JarBatchApprovalProtocol.Entry.ZBSignature(true, new SteamID64(76561198000000000L), "", true);
         JarBatchApprovalProtocol.Entry expected = approvalEntry("TrustMod", Path.of("/mods/TrustMod/a.jar"),
             ModFlags.EMPTY, valid, null);
         JarBatchApprovalProtocol.Entry actual = approvalEntry("TrustMod", Path.of("/mods/TrustMod/a.jar"),
@@ -323,6 +323,21 @@ class JarBatchApprovalProtocolTest {
             JarBatchApprovalProtocol.sanitizeResponse(List.of(expected), List.of(actual));
         assertNotNull(sanitized);
         assertTrue(sanitized.get(0).flags.has(ModFlags.MF_TRUST_AUTHOR));
+    }
+
+    @Test
+    void sanitizeResponseDropsTrustForProfileKeySignature() {
+        JarBatchApprovalProtocol.Entry.ZBSignature profileKey =
+            new JarBatchApprovalProtocol.Entry.ZBSignature(true, new SteamID64(76561198000000000L), "", false);
+        JarBatchApprovalProtocol.Entry expected = approvalEntry("TrustMod", Path.of("/mods/TrustMod/a.jar"),
+            ModFlags.EMPTY, profileKey, null);
+        JarBatchApprovalProtocol.Entry actual = approvalEntry("TrustMod", Path.of("/mods/TrustMod/a.jar"),
+            new ModFlags(ModFlags.MF_TRUST_AUTHOR), profileKey, null);
+
+        List<JarBatchApprovalProtocol.Entry> sanitized =
+            JarBatchApprovalProtocol.sanitizeResponse(List.of(expected), List.of(actual));
+        assertNotNull(sanitized);
+        assertFalse(sanitized.get(0).flags.has(ModFlags.MF_TRUST_AUTHOR));
     }
 
     @Test

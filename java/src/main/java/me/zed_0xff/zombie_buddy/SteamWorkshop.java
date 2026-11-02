@@ -97,7 +97,11 @@ public final class SteamWorkshop {
     }
 
     private static Duration parseHttpTimeout() {
-        return Duration.ofSeconds(Agent.getArgInt("http.client.timeout", DEFAULT_TIMEOUT));
+        // Documented key first; retain the old undocumented key as a fallback
+        // for existing launch configurations.
+        int timeout = Agent.getArgInt("http_client_timeout",
+            Agent.getArgInt("http.client.timeout", DEFAULT_TIMEOUT));
+        return Duration.ofSeconds(Math.max(1, timeout));
     }
 
     private SteamWorkshop() {}
@@ -223,21 +227,10 @@ public final class SteamWorkshop {
             WorkshopItemID id = parsePublishedFileId(itObj.get("publishedfileid"));
             if (id == null) continue;
             seen.add(id);
-            int banned = 0;
-            JsonElement bannedJson = itObj.get("banned");
-            if (bannedJson != null && bannedJson.isJsonPrimitive() && bannedJson.getAsJsonPrimitive().isNumber()) {
-                banned = bannedJson.getAsInt();
+            ItemDetails parsed = parseItemDetails(itObj);
+            if (parsed != null) {
+                out.put(id, parsed);
             }
-            String reason = "";
-            JsonElement banReasonJson = itObj.get("ban_reason");
-            if (banReasonJson != null && banReasonJson.isJsonPrimitive() && banReasonJson.getAsJsonPrimitive().isString()) {
-                reason = banReasonJson.getAsString();
-            }
-            SteamID64 creator = parseCreatorSteamId64(it);
-            out.put(id, new ItemDetails(
-                new BanInfo(banned != 0 ? BanStatus.BANNED : BanStatus.NOT_BANNED, reason),
-                creator
-            ));
         }
         for (WorkshopItemID id : chunk) {
             if (!seen.contains(id) && !out.containsKey(id)) {
@@ -247,6 +240,72 @@ public final class SteamWorkshop {
                 ));
             }
         }
+    }
+
+    /**
+     * Parses one {@code publishedfiledetails} object. A missing or non-1
+     * {@code result}, or a missing/invalid {@code banned} field, is treated as
+     * {@link BanStatus#UNKNOWN} rather than "not banned".
+     */
+    static ItemDetails parseItemDetails(JsonObject item) {
+        if (item == null) {
+            return null;
+        }
+
+        long result = parseLong(item.get("result"), Long.MIN_VALUE);
+        SteamID64 creator = null;
+        try {
+            creator = parseCreatorSteamId64(item);
+        } catch (RuntimeException ignored) {
+            // A malformed creator means uploader binding is unavailable; the
+            // caller still applies the ban tri-state below.
+        }
+
+        if (result != 1) {
+            return new ItemDetails(
+                BanInfo.unknown(result == Long.MIN_VALUE
+                    ? "Steam API response missing result"
+                    : "Steam API result " + result),
+                creator
+            );
+        }
+
+        JsonElement bannedJson = item.get("banned");
+        if (bannedJson == null || !bannedJson.isJsonPrimitive() || !bannedJson.getAsJsonPrimitive().isNumber()) {
+            return new ItemDetails(
+                BanInfo.unknown("Steam API response missing or invalid ban status"),
+                creator
+            );
+        }
+
+        int banned = bannedJson.getAsInt();
+        String reason = "";
+        JsonElement banReasonJson = item.get("ban_reason");
+        if (banReasonJson != null && banReasonJson.isJsonPrimitive() && banReasonJson.getAsJsonPrimitive().isString()) {
+            reason = banReasonJson.getAsString();
+        }
+        return new ItemDetails(
+            new BanInfo(banned != 0 ? BanStatus.BANNED : BanStatus.NOT_BANNED, reason),
+            creator
+        );
+    }
+
+    private static long parseLong(JsonElement value, long defaultValue) {
+        if (value == null || value.isJsonNull() || !value.isJsonPrimitive()) {
+            return defaultValue;
+        }
+        JsonPrimitive primitive = value.getAsJsonPrimitive();
+        try {
+            if (primitive.isNumber()) {
+                return primitive.getAsLong();
+            }
+            if (primitive.isString()) {
+                return Long.parseLong(primitive.getAsString().trim());
+            }
+        } catch (RuntimeException ignored) {
+            // Fall through to the default.
+        }
+        return defaultValue;
     }
 
     private static void setUnknownDetails(

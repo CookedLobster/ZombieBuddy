@@ -1,6 +1,7 @@
 *.class
 *.exe
 *.jar
+!installer/testdata/signed-test.jar
 *.local
 *.log
 

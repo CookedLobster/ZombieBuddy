@@ -36,7 +36,12 @@ Current hardening in this fork:
   defaults to loopback, limits request/response sizes, and uses a fixed worker pool.
 - Author-list generation and runtime parsing reject duplicate author IDs and duplicate signing
   keys. Malformed keys are ignored.
-- The `authors.json` list is Ed25519-signed and verified against a key baked into the JAR.
+- The `authors.json` list is Ed25519-signed and verified against a key baked into the JAR; CI
+  verifies it before merge.
+- Trusted-author auto-approval only uses keys from the signed `authors.json` list. A Steam-profile
+  key can verify a mod for manual approval, but cannot auto-approve it.
+- The installer verifies the complete JAR signature, manifest, and every entry digest (including
+  nested `META-INF` resources) on a staged copy before installing it.
 
 ## Verifying release artifacts
 
@@ -59,7 +64,8 @@ Historical binaries in Git history are not release artifacts and must not be run
 
 ## Fixed audit findings
 
-The 2026-11-02 audit’s High and Medium findings were fixed:
+The 2026-11-02 audit’s High and Medium findings were fixed, except the open install-time
+`zbNative.dll` verification item (ZB-26):
 
 | ID | Finding | Status |
 |---|---|---|
@@ -70,6 +76,11 @@ The 2026-11-02 audit’s High and Medium findings were fixed:
 | ZB-05 | Permissive defaults / trusted-author precedence | Fixed |
 | ZB-12 | Author-list duplicate-ID/key shadowing | Fixed |
 | ZB-16 | Trust badge used uploader ID | Fixed with ZB-05 |
+| ZB-21 | Installer accepted a copied signature block as a valid JAR | Fixed (re-scan) |
+| ZB-22 | Steam API error/missing ban fields treated as not banned | Fixed (re-scan) |
+| ZB-23 | Trusted-author auto-approval accepted profile/empty keys | Fixed (re-scan) |
+| ZB-25 | Self-updater exempted nested `META-INF` resources from signing | Fixed (re-scan) |
 
-Low and Info findings remain tracked in [`doc/SecurityAudit.md`](doc/SecurityAudit.md). See
-`AGENTS.md` for the project’s security invariants.
+Low and Info findings remain tracked in [`doc/SecurityAudit.md`](doc/SecurityAudit.md), including
+the open install-time `zbNative.dll` verification item. See `AGENTS.md` for the project’s
+security invariants.
